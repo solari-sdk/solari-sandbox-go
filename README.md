@@ -4,7 +4,7 @@ Go language binding for the Solari sandbox SDK (core surface): create / connect 
 kill a sandbox over REST, then drive a live session's **Commands**, **Files**,
 **Code**, and **Git** namespaces over the control WebSocket. It behaves
 identically on the wire to the reference TypeScript (`@solarisdk/core`) and
-Python (`solari_desktop`) SDKs — see `../PROTOCOL.md` for the contract.
+Python (`solari_desktop`) SDKs — see [`PROTOCOL.md`](PROTOCOL.md) for the contract.
 
 ```
 import "github.com/solari-sdk/solari-sandbox-go"

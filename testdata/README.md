@@ -1,14 +1,13 @@
 # testdata
 
-`wire-contract.json` is a SYMLINK to `tests/sdk/ts-request-fixtures.json` — the
-canonical cross-language wire contract that `tests/sdk/contract.test.ts`
-regenerates from the reference (TypeScript) SDK.
+`wire-contract.json` is a copy of `tests/sdk/ts-request-fixtures.json` from the
+Solari monorepo — the canonical cross-language wire contract that the reference
+(TypeScript) SDK's contract suite regenerates on every run. It is republished
+here whenever the contract changes; treat the monorepo fixture as the source of
+truth. The human-readable half of the contract is `PROTOCOL.md` at the repo
+root.
 
-It is a symlink rather than a copy so there is exactly ONE contract in the repo:
-a second copy would be a second source of truth, free to drift from the first,
-which is the bug class this contract exists to kill.
-
-It is a symlink rather than a `../../tests/sdk/...` path in the test because
-`go test` caches results and only invalidates on files opened INSIDE the module.
-Reading the fixture directly by relative path left a tampered contract passing
-from cache — see the comment on `contractFixturePath` in `contract_wire_test.go`.
+The test reads it via `testdata/` (not a relative path out of the module)
+because `go test` caches results and only invalidates on files opened INSIDE
+the module — see the comment on `contractFixturePath` in
+`contract_wire_test.go`.
