@@ -152,8 +152,18 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 					errBody = &b
 				}
 			}
-			// 5xx or an explicit retryable hint. NOT 429 (ConcurrencyLimitError).
-			retryable := res.StatusCode >= 500 || (errBody != nil && errBody.Retryable)
+			// 🚨 ALLOWLIST, NOT >= 500 — a 5xx is not automatically transient. The
+			// gateway's seven 501 sites (every /volumes route, permanently unavailable
+			// on GCP) were each retried 5x with backoff; the curve is visible in prod
+			// LB logs (04:47:11, +24s, +47s — doubling, which separates a retry loop
+			// from an evenly-spaced poll).
+			// 🪤 507 is named here rather than left to the retryable hint: the hint
+			// would cover it today, but that ties this SDK's correctness to which
+			// gateway build the caller reaches. 500 excluded (an unhandled error is
+			// not known-transient); 429 excluded as before.
+			retryableStatus := res.StatusCode == 502 || res.StatusCode == 503 ||
+				res.StatusCode == 504 || res.StatusCode == 507
+			retryable := retryableStatus || (errBody != nil && errBody.Retryable)
 			if idempotent && retryable && attempt < t.maxRetries {
 				if serr := t.sleepBackoff(ctx, attempt); serr != nil {
 					return serr

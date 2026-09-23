@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -75,7 +76,9 @@ func buildCreateBody(opts CreateOptions) createSandboxRequest {
 		Envs:         opts.Envs,
 		Metadata:     opts.Metadata,
 		TimeoutMs:    opts.TimeoutMs,
+		TtlSeconds:   opts.TtlSeconds,
 		FromSnapshot: opts.FromSnapshot,
+		Isolation:    opts.Isolation,
 		Lifecycle:    opts.Lifecycle,
 		Resolution:   opts.Resolution,
 		Record:       opts.Record,
@@ -95,7 +98,7 @@ func (c *Client) Create(ctx context.Context, opts CreateOptions) (*Sandbox, erro
 	if err != nil {
 		return nil, err
 	}
-	return c.newSandbox(resp), nil
+	return c.newSandbox(resp)
 }
 
 // Get fetches a sandbox's current view (GET /sandboxes/:id).
@@ -112,6 +115,9 @@ func (c *Client) Get(ctx context.Context, sandboxID string) (*SandboxView, error
 // controlUrl, it is derived by swapping the base URL scheme to ws/wss and
 // appending /control/<id>.
 func (c *Client) Connect(ctx context.Context, sandboxID string) (*Sandbox, error) {
+	if strings.TrimSpace(sandboxID) == "" {
+		return nil, newSolariError("Solari: Connect requires a non-blank sandbox id")
+	}
 	view, err := c.Get(ctx, sandboxID)
 	if err != nil {
 		return nil, err
@@ -134,7 +140,7 @@ func (c *Client) Connect(ctx context.Context, sandboxID string) (*Sandbox, error
 		ControlURL: controlURL,
 		ExpiresAt:  view.ExpiresAt,
 		StreamURL:  streamURL,
-	}), nil
+	})
 }
 
 // Kill destroys a sandbox (DELETE /sandboxes/:id). Idempotent.
@@ -199,7 +205,14 @@ type Sandbox struct {
 	Git      *Git
 }
 
-func (c *Client) newSandbox(resp CreateSandboxResponse) *Sandbox {
+func (c *Client) newSandbox(resp CreateSandboxResponse) (*Sandbox, error) {
+	// A blank id is the one bad value that survives to the wire looking almost
+	// right: it builds "/sandboxes//exec" (a double slash), not an obviously
+	// wrong path, so it goes unnoticed while every call the handle makes is
+	// malformed. Reject it where the handle is built. (Test blank, not absence.)
+	if strings.TrimSpace(resp.SandboxID) == "" {
+		return nil, newSolariError("Solari: session id must not be blank — an empty id builds a malformed /sandboxes// request")
+	}
 	header := http.Header{}
 	header.Set("Authorization", c.http.authHeader())
 	callTimeout := time.Duration(c.callTimeoutMs) * time.Millisecond
@@ -220,13 +233,14 @@ func (c *Client) newSandbox(resp CreateSandboxResponse) *Sandbox {
 	sb.Files = &Files{sb: sb}
 	sb.Code = &Code{sb: sb}
 	sb.Git = newGit(sb.runCommand)
-	return sb
+	return sb, nil
 }
 
 // Connect opens the control WebSocket. Idempotent.
 func (s *Sandbox) Connect(ctx context.Context) error { return s.ch.connect(ctx) }
 
-// Reconnect re-opens the control channel after a drop.
+// Reconnect re-opens the control channel after a drop. No id check: it reuses
+// this handle's id, already validated as non-blank when the handle was built.
 func (s *Sandbox) Reconnect(ctx context.Context) error { return s.ch.reconnect(ctx) }
 
 // Connected reports whether the control channel is open.

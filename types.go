@@ -12,10 +12,49 @@ const (
 	KindDesktop SandboxKind = "desktop"
 )
 
+// SandboxIsolation is the VM isolation tier.
+type SandboxIsolation string
+
+const (
+	// IsolationShared runs inside a VM shared with your other shared
+	// sandboxes. Sandbox-only — the gateway refuses it for KindDesktop.
+	IsolationShared SandboxIsolation = "shared"
+	// IsolationDedicated is your own VM (the default).
+	IsolationDedicated SandboxIsolation = "dedicated"
+	// IsolationHardened is your own VM with outbound network blocked.
+	// Verified 2026-09-23 on staging (DNS and direct-IP outbound both timed
+	// out from inside a hardened guest against an instant-responding control
+	// sandbox) — not yet independently verified on prod. Not every host
+	// advertises this capability; the gateway refuses with
+	// 409 HostCapabilityMissing where it doesn't.
+	IsolationHardened SandboxIsolation = "hardened"
+)
+
 // SandboxLifecycle is the idle lifecycle policy (pause/kill on timeout).
 type SandboxLifecycle struct {
 	OnTimeout  string `json:"onTimeout"`
 	AutoResume *bool  `json:"autoResume,omitempty"`
+	// ParkAfterMs auto-parks (deschedules) the guest after this many
+	// milliseconds with no activity. Parking freezes vCPUs but keeps the slot,
+	// ports and control channel resident, so the next request wakes it in
+	// milliseconds. Floored by the gateway and capped at the session's idle
+	// window (parking after the session would already have timed out is a
+	// no-op). Zero/omitted means "do not auto-park".
+	ParkAfterMs int `json:"parkAfterMs,omitempty"`
+	// ParkMaxMs bounds a park: the most a session may stay parked before the
+	// gateway wakes it unconditionally, even with no incoming traffic — "we
+	// return before your peer gives up". Floored at the gateway's park floor
+	// and capped at the idle window.
+	ParkMaxMs int `json:"parkMaxMs,omitempty"`
+	// HibernateAfterParkedMs escalates a session that has been parked this
+	// long to a full hibernate (durable checkpoint, slot freed) rather than
+	// staying frozen indefinitely. Same floor/cap reasoning as ParkAfterMs.
+	HibernateAfterParkedMs int `json:"hibernateAfterParkedMs,omitempty"`
+	// CheckpointEveryMs takes a live durable checkpoint at most this often
+	// while the session runs, so a host loss costs at most one interval of
+	// progress. Floored server-side — a checkpoint pauses the guest for the
+	// length of the snapshot.
+	CheckpointEveryMs int `json:"checkpointEveryMs,omitempty"`
 }
 
 // VolumeAttachment is one attach-at-create instruction: a persistent volume
@@ -33,16 +72,22 @@ type VolumeAttachment struct {
 // is commonly set; everything else is optional (nil/zero fields are omitted
 // from the wire body).
 type CreateOptions struct {
-	Template     string
-	Kind         SandboxKind
-	CPU          int
-	MemMb        int
-	DiskGb       int
-	Envs         map[string]string
-	Metadata     map[string]string
-	TimeoutMs    int
+	Template  string
+	Kind      SandboxKind
+	CPU       int
+	MemMb     int
+	DiskGb    int
+	Envs      map[string]string
+	Metadata  map[string]string
+	TimeoutMs int
+	// TtlSeconds is a legacy, gateway-side FALLBACK idle window in seconds,
+	// only used when TimeoutMs is unset — prefer TimeoutMs. Kept for parity
+	// with the reference SDKs, which have always accepted it.
+	TtlSeconds   int
 	FromSnapshot string
-	Lifecycle    *SandboxLifecycle
+	// Isolation is the VM isolation tier. See SandboxIsolation.
+	Isolation SandboxIsolation
+	Lifecycle *SandboxLifecycle
 	// Resolution is the initial display resolution, e.g. "1280x720". Desktops
 	// only (KindDesktop) — a headless sandbox has no display.
 	Resolution string
@@ -71,7 +116,9 @@ type createSandboxRequest struct {
 	Envs         map[string]string  `json:"envs,omitempty"`
 	Metadata     map[string]string  `json:"metadata,omitempty"`
 	TimeoutMs    int                `json:"timeoutMs,omitempty"`
+	TtlSeconds   int                `json:"ttlSeconds,omitempty"`
 	FromSnapshot string             `json:"fromSnapshot,omitempty"`
+	Isolation    SandboxIsolation   `json:"isolation,omitempty"`
 	Lifecycle    *SandboxLifecycle  `json:"lifecycle,omitempty"`
 	Resolution   string             `json:"resolution,omitempty"`
 	Record       *bool              `json:"record,omitempty"`

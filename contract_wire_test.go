@@ -227,9 +227,21 @@ func TestWireContractMatchesReferenceSDK(t *testing.T) {
 		Envs:         map[string]string{"FOO": "bar"},
 		Metadata:     map[string]string{"proj": "alpha"},
 		TimeoutMs:    600_000,
+		TtlSeconds:   3600,
 		FromSnapshot: "snap_seed",
-		Lifecycle:    &SandboxLifecycle{OnTimeout: "pause", AutoResume: &autoResume},
-		Volumes:      []VolumeAttachment{{VolumeID: "vol_data", Path: "/data"}},
+		// Isolation is set per-op below (dedicated for the sandbox, hardened
+		// for the desktop, matching the TS reference exactly) rather than here
+		// -- "shared" is refused for desktops, so the two calls cannot share
+		// one isolation value.
+		Lifecycle: &SandboxLifecycle{
+			OnTimeout:              "pause",
+			AutoResume:             &autoResume,
+			ParkAfterMs:            30_000,
+			ParkMaxMs:              20_000,
+			HibernateAfterParkedMs: 90_000,
+			CheckpointEveryMs:      300_000,
+		},
+		Volumes: []VolumeAttachment{{VolumeID: "vol_data", Path: "/data"}},
 	}
 
 	var sb *Sandbox
@@ -240,6 +252,7 @@ func TestWireContractMatchesReferenceSDK(t *testing.T) {
 		"createSandbox": func() error {
 			o := common
 			o.Template = "base"
+			o.Isolation = IsolationDedicated
 			var err error
 			sb, err = c.Create(ctx, o)
 			return err
@@ -250,6 +263,7 @@ func TestWireContractMatchesReferenceSDK(t *testing.T) {
 			o.Kind = KindDesktop
 			o.Resolution = "1280x720"
 			o.Record = &recordOn
+			o.Isolation = IsolationHardened
 			d, err := c.Create(ctx, o)
 			if err == nil {
 				d.Close()
