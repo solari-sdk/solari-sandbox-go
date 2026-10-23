@@ -173,6 +173,35 @@ func (c *Client) Resume(ctx context.Context, sandboxID string) (string, error) {
 	return c.http.wsOrigin() + "/control/" + encodeURIComponent(sandboxID), nil
 }
 
+// Start cold-boots a STOPPED sandbox (POST /sandboxes/:id/start) from the disk the
+// host kept, and returns the fresh control URL to re-attach to.
+//
+// A sandbox is stopped when its guest powered itself off. Start is a cold boot, not
+// a resume: running processes and memory are gone, files on disk are kept. It takes
+// a concurrency slot (429 at the cap) and opens a new billing segment. Idempotent:
+// an already-running sandbox answers 200 and the current control URL.
+//
+// A sandbox in any other state is refused with a 409 *GatewayError whose Code is
+// "NotStopped" (the body also carries the state; use Resume for a paused one) or
+// "StartInProgress". A stopped disk that cannot be started answers 409 with its
+// code (StoppedDiskMissing, StoppedDiskUnsafe, GoldenMismatch,
+// DiskPlatformMismatch, DiskShaMismatch, DiskExceedsSpec, DiskOwnerMismatch).
+// 409 HostCapabilityMissing means the host pool is not armed for start (not
+// retryable). 503 NoCapacity / StartTimeout (*NoCapacityError) and 502
+// StartHostError are retryable; 500 StartFailed is not, and leaves the sandbox
+// stopped with its disk, so a later Start is safe.
+func (c *Client) Start(ctx context.Context, sandboxID string) (string, error) {
+	var r startResponse
+	err := c.http.request(ctx, http.MethodPost, "/sandboxes/"+encodeURIComponent(sandboxID)+"/start", nil, httpRequestOptions{}, &r)
+	if err != nil {
+		return "", err
+	}
+	if r.ControlURL != "" {
+		return r.ControlURL, nil
+	}
+	return c.http.wsOrigin() + "/control/" + encodeURIComponent(sandboxID), nil
+}
+
 // exec is the one-shot command fast path (POST /sandboxes/:id/exec).
 func (c *Client) exec(ctx context.Context, id string, req execOneShotRequest) (*CommandResult, error) {
 	var res CommandResult
@@ -198,6 +227,7 @@ type Sandbox struct {
 	killHook   func(ctx context.Context, id string) error
 	pauseHook  func(ctx context.Context, id string) error
 	resumeHook func(ctx context.Context, id string) (string, error)
+	startHook  func(ctx context.Context, id string) (string, error)
 
 	Commands *Commands
 	Files    *Files
@@ -228,6 +258,7 @@ func (c *Client) newSandbox(resp CreateSandboxResponse) (*Sandbox, error) {
 		killHook:   c.Kill,
 		pauseHook:  c.Pause,
 		resumeHook: c.Resume,
+		startHook:  c.Start,
 	}
 	sb.Commands = &Commands{sb: sb}
 	sb.Files = &Files{sb: sb}
@@ -275,6 +306,22 @@ func (s *Sandbox) Resume(ctx context.Context) error {
 		return newSolariError("resume requires a client-created handle")
 	}
 	controlURL, err := s.resumeHook(ctx, s.ID)
+	if err != nil {
+		return err
+	}
+	s.ControlURL = controlURL
+	s.ch.setControlURL(controlURL)
+	return s.ch.reconnect(ctx)
+}
+
+// Start cold-boots this STOPPED session from its kept disk and re-points the
+// control channel at the fresh control URL. Processes and memory are gone, files
+// on disk are kept. See Client.Start for the refusal codes.
+func (s *Sandbox) Start(ctx context.Context) error {
+	if s.startHook == nil {
+		return newSolariError("start requires a client-created handle")
+	}
+	controlURL, err := s.startHook(ctx, s.ID)
 	if err != nil {
 		return err
 	}
