@@ -368,22 +368,33 @@ func (c *channel) newIDLocked() string {
 // onFrame registers a handler for an async-frame type keyed on its stream id,
 // flushing any orphan frames that arrived before this registration.
 func (c *channel) onFrame(typ, id string, h frameHandler) {
-	c.mu.Lock()
-	m := c.frameHandlers[typ]
-	if m == nil {
-		m = map[string]frameHandler{}
-		c.frameHandlers[typ] = m
-	}
-	m[id] = h
 	key := typ + "\x1f" + id
-	pending := c.orphanFrames[key]
-	if pending != nil {
+	// Replay frames that arrived before this handler existed (e.g. output packed
+	// in the same websocket message as the cmd.start reply) in arrival order, and
+	// register the handler only once nothing is left to replay. Registering first
+	// would let the read loop deliver a newer live frame while an older orphan is
+	// still being replayed, reordering the stream ("worldhello "). Frames that
+	// arrive during a replay land in the orphan list again and are drained by the
+	// next pass, so each is delivered exactly once and in order.
+	for {
+		c.mu.Lock()
+		pending := c.orphanFrames[key]
+		if pending == nil {
+			m := c.frameHandlers[typ]
+			if m == nil {
+				m = map[string]frameHandler{}
+				c.frameHandlers[typ] = m
+			}
+			m[id] = h
+			c.mu.Unlock()
+			return
+		}
 		delete(c.orphanFrames, key)
 		c.orphanCount -= len(pending)
-	}
-	c.mu.Unlock()
-	for _, f := range pending {
-		h(f)
+		c.mu.Unlock()
+		for _, f := range pending {
+			h(f)
+		}
 	}
 }
 

@@ -50,18 +50,26 @@ type CommandHandle struct {
 // OnData subscribes to stdout/stderr chunks. Any output buffered before the
 // first subscriber is replayed so early output is never dropped.
 func (h *CommandHandle) OnData(cb func(stream, data string)) {
-	h.mu.Lock()
-	if len(h.buffered) > 0 {
+	// Replay buffered output in order and register cb only once nothing is left
+	// to replay. Registering after a single replay would lose (a chunk delivered
+	// between "buffered = nil" and the append lands in h.buffered with no one to
+	// read it) or reorder (a live chunk overtakes the replay) output that arrives
+	// while the replay runs; chunks that arrive meanwhile are buffered again and
+	// drained by the next pass.
+	for {
+		h.mu.Lock()
+		if len(h.buffered) == 0 {
+			h.dataCbs = append(h.dataCbs, cb)
+			h.mu.Unlock()
+			return
+		}
 		buffered := h.buffered
 		h.buffered = nil
 		h.mu.Unlock()
 		for _, c := range buffered {
 			cb(c.stream, c.data)
 		}
-		h.mu.Lock()
 	}
-	h.dataCbs = append(h.dataCbs, cb)
-	h.mu.Unlock()
 }
 
 // Wait blocks until the command exits (or the channel drops / ctx is cancelled)

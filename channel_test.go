@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -273,4 +274,46 @@ func newTestSandbox(wsURL string) *Sandbox {
 	sb.Code = &Code{sb: sb}
 	sb.Git = newGit(sb.runCommand)
 	return sb
+}
+
+// Frames that arrive before a handler exists (output packed with the cmd.start
+// reply) are replayed in order, and a LIVE frame that arrives during the replay
+// must not overtake them. Regression for the "worldhello " flake.
+func TestOnFrameReplayKeepsOrderAgainstLiveFrames(t *testing.T) {
+	c := newChannel("ws://unused", nil, time.Second)
+	frame := func(s string) string {
+		return `{"type":"cmd.data","cmdId":"c1","stream":"stdout","base64":"` +
+			base64.StdEncoding.EncodeToString([]byte(s)) + `"}` + "\n"
+	}
+	c.feed([]byte(frame("a")))
+
+	var mu sync.Mutex
+	var got []string
+	var calls atomic.Int32
+	firstSeen := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.onFrame("cmd.data", "c1", func(f asyncFrame) {
+			if calls.Add(1) == 1 {
+				close(firstSeen)
+				<-release // hold the replay open (before recording) while a live frame arrives
+			}
+			b, _ := base64.StdEncoding.DecodeString(f.Base64)
+			mu.Lock()
+			got = append(got, string(b))
+			mu.Unlock()
+		})
+	}()
+	<-firstSeen
+	c.feed([]byte(frame("b"))) // live frame, handler registration still in progress
+	close(release)
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(got, "") != "ab" {
+		t.Fatalf("frames out of order or lost: got %q, want %q", strings.Join(got, ""), "ab")
+	}
 }
