@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -243,4 +244,94 @@ func asConcurrency(err error) (*ConcurrencyLimitError, bool) {
 		return e, true
 	}
 	return nil, false
+}
+
+// startServer answers POST /sandboxes/:id/start with the given status/body and
+// records the request line.
+func startServer(t *testing.T, status int, body map[string]any, got *string) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*got = r.Method + " " + r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := NewClient(ClientOptions{APIKey: "slr_test_x", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestClientStartReturnsFreshControlURL(t *testing.T) {
+	var got string
+	c := startServer(t, 200, map[string]any{"state": "running", "controlUrl": "wss://gw.test/control/fresh"}, &got)
+	url, err := c.Start(context.Background(), "pool-a:vm-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "wss://gw.test/control/fresh" {
+		t.Errorf("control url = %q", url)
+	}
+	if got != "POST /sandboxes/pool-a%3Avm-7/start" {
+		t.Errorf("wire = %q", got)
+	}
+}
+
+func TestClientStartAlreadyRunningStillReturnsURL(t *testing.T) {
+	var got string
+	c := startServer(t, 200, map[string]any{"state": "running", "controlUrl": "wss://gw.test/control/cur", "alreadyRunning": true}, &got)
+	url, err := c.Start(context.Background(), "sbx1")
+	if err != nil || url != "wss://gw.test/control/cur" {
+		t.Fatalf("url=%q err=%v", url, err)
+	}
+}
+
+func TestClientStartDerivesURLWhenOmitted(t *testing.T) {
+	var got string
+	c := startServer(t, 200, map[string]any{"state": "running"}, &got)
+	url, err := c.Start(context.Background(), "sbx1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(url, "ws") || !strings.HasSuffix(url, "/control/sbx1") {
+		t.Errorf("derived url = %q", url)
+	}
+}
+
+func TestClientStartRefusalCodes(t *testing.T) {
+	for _, code := range []string{"NotStopped", "StartInProgress", "StoppedDiskMissing", "StoppedDiskUnsafe", "GoldenMismatch", "DiskPlatformMismatch", "DiskShaMismatch", "DiskExceedsSpec", "DiskOwnerMismatch", "HostCapabilityMissing", "SandboxStopped"} {
+		var got string
+		c := startServer(t, 409, map[string]any{"code": code, "error": "refused", "state": "paused", "retryable": false}, &got)
+		_, err := c.Start(context.Background(), "sbx1")
+		var ge *GatewayError
+		if !errors.As(err, &ge) {
+			t.Fatalf("%s: err %v is not a *GatewayError", code, err)
+		}
+		if ge.Status != 409 || ge.Code != code {
+			t.Errorf("%s: status=%d code=%q", code, ge.Status, ge.Code)
+		}
+	}
+}
+
+func TestClientStartCapacityAndLimit(t *testing.T) {
+	var got string
+	c := startServer(t, 429, map[string]any{"error": "cap"}, &got)
+	var cl *ConcurrencyLimitError
+	if _, err := c.Start(context.Background(), "sbx1"); !errors.As(err, &cl) {
+		t.Errorf("429: want *ConcurrencyLimitError, got %v", err)
+	}
+	c2 := startServer(t, 500, map[string]any{"code": "StartFailed", "error": "x", "retryable": false}, &got)
+	var ge *GatewayError
+	if _, err := c2.Start(context.Background(), "sbx1"); !errors.As(err, &ge) || ge.Code != "StartFailed" {
+		t.Errorf("500: got %v", err)
+	}
+}
+
+func TestSandboxStartNeedsClientHandle(t *testing.T) {
+	sb := &Sandbox{}
+	if err := sb.Start(context.Background()); err == nil {
+		t.Error("want error for a handle without a client")
+	}
 }

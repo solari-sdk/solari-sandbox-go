@@ -133,6 +133,14 @@ type resumeResponse struct {
 	ControlURL string `json:"controlUrl,omitempty"`
 }
 
+// startResponse is the POST /sandboxes/{id}/start reply. ControlURL is a fresh
+// URL; AlreadyRunning is set when the sandbox was already running.
+type startResponse struct {
+	State          string `json:"state"`
+	ControlURL     string `json:"controlUrl,omitempty"`
+	AlreadyRunning bool   `json:"alreadyRunning,omitempty"`
+}
+
 // CreateSandboxResponse is the 201 response from POST /sandboxes.
 type CreateSandboxResponse struct {
 	SandboxID  string      `json:"sandboxId"`

@@ -155,6 +155,8 @@ func startContractGateway(t *testing.T) (*httptest.Server, *[]recordedReq) {
 			// The session comes back on a FRESH slot, so the gateway hands back
 			// the control URL to re-attach to.
 			_ = json.NewEncoder(w).Encode(map[string]any{"state": "running", "controlUrl": controlURL})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/start"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"state": "running", "controlUrl": controlURL})
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/sandboxes/"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"sandboxId": canonicalSessionID,
@@ -291,6 +293,15 @@ func TestWireContractMatchesReferenceSDK(t *testing.T) {
 			}
 			if !sb.Connected() {
 				t.Error("resume: control channel not re-opened on the fresh slot")
+			}
+			return nil
+		},
+		"start": func() error {
+			if err := sb.Start(ctx); err != nil {
+				return err
+			}
+			if !sb.Connected() {
+				t.Error("start: control channel not re-opened on the fresh control URL")
 			}
 			return nil
 		},
