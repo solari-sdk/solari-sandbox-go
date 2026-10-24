@@ -3,7 +3,9 @@ package solari
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"sync"
+	"time"
 )
 
 // Commands is the process-execution namespace on a Sandbox.
@@ -21,7 +23,7 @@ func (c *Commands) Run(ctx context.Context, cmd string, opts CommandOptions) (*C
 // exit). Output streams as cmd.data frames; the handle exposes Stdin, OnData,
 // Wait, and Kill.
 func (c *Commands) Start(ctx context.Context, cmd string, opts CommandOptions) (*CommandHandle, error) {
-	return c.sb.startCommand(ctx, cmd, opts)
+	return c.sb.startCommand(ctx, cmd, opts, nil)
 }
 
 type dataChunk struct {
@@ -123,7 +125,7 @@ func (h *CommandHandle) finishExit(code int, err error) {
 }
 
 // startCommand issues cmd.start and wires the async cmd.data/cmd.exit handlers.
-func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOptions) (*CommandHandle, error) {
+func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOptions, acc *cmdAccumulator) (*CommandHandle, error) {
 	params := map[string]interface{}{"cmd": cmd}
 	if opts.Args != nil {
 		params["args"] = opts.Args
@@ -156,6 +158,13 @@ func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOpti
 		exitCh: make(chan exitResult, 1),
 	}
 
+	// The result accumulator is subscribed BEFORE the frame handlers are registered:
+	// registering them flushes frames that beat the cmd.start reply, and a non-empty
+	// subscriber list skips the replay buffer, so an accumulator attached afterwards
+	// (via OnData) would lose that early output whenever a callback is set.
+	if acc != nil {
+		h.dataCbs = append(h.dataCbs, acc.add)
+	}
 	// Route streaming callbacks straight through (before returning the handle),
 	// mirroring the reference SDK so early output reaches OnStdout/OnStderr.
 	if opts.OnStdout != nil || opts.OnStderr != nil {
@@ -227,32 +236,54 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 		}
 	}
 
-	handle, err := s.startCommand(ctx, cmd, opts)
+	acc := &cmdAccumulator{}
+	handle, err := s.startCommand(ctx, cmd, opts, acc)
 	if err != nil {
 		return nil, err
 	}
-
-	var mu sync.Mutex
-	var stdout, stderr []byte
-	handle.OnData(func(stream, data string) {
-		mu.Lock()
-		if stream == "stdout" {
-			stdout = append(stdout, data...)
-		} else {
-			stderr = append(stderr, data...)
-		}
-		mu.Unlock()
-	})
 
 	if opts.Background {
 		return &CommandResult{ExitCode: 0, Stdout: "", Stderr: ""}, nil
 	}
 
-	code, err := handle.Wait(ctx)
-	if err != nil {
-		return nil, err
+	// TimeoutMs is a deadline for the command, as on the REST /exec path: when it elapses the
+	// command is killed and the result is exit -1 with the output so far (the guest's own
+	// timeout result). Without this a hung command waited here until ctx was cancelled.
+	waitCtx, cancel := ctx, context.CancelFunc(func() {})
+	if opts.TimeoutMs > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutMs)*time.Millisecond)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	return &CommandResult{ExitCode: code, Stdout: string(stdout), Stderr: string(stderr)}, nil
+	code, err := handle.Wait(waitCtx)
+	cancel()
+	if err != nil {
+		if opts.TimeoutMs > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			_ = handle.Kill(ctx, 9)
+			code = -1
+		} else {
+			return nil, err
+		}
+	}
+	return acc.result(code), nil
+}
+
+// cmdAccumulator collects a command's stdout/stderr for the CommandResult.
+type cmdAccumulator struct {
+	mu             sync.Mutex
+	stdout, stderr []byte
+}
+
+func (a *cmdAccumulator) add(stream, data string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if stream == "stdout" {
+		a.stdout = append(a.stdout, data...)
+	} else {
+		a.stderr = append(a.stderr, data...)
+	}
+}
+
+func (a *cmdAccumulator) result(code int) *CommandResult {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return &CommandResult{ExitCode: code, Stdout: string(a.stdout), Stderr: string(a.stderr)}
 }
