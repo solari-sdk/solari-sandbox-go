@@ -3,6 +3,7 @@ package solari
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -179,6 +180,100 @@ func TestCommandsRunOverMockWS(t *testing.T) {
 	}
 }
 
+// The guest can emit cmd.data / cmd.exit BEFORE the cmd.start reply (PROTOCOL.md section 2). Those orphan frames
+// are flushed when the handler registers; with OnStdout/OnStderr set they must still reach the CommandResult.
+func TestCommandsRunKeepsEarlyOutputWithCallbacks(t *testing.T) {
+	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
+		if _, err := readOneFrame(conn); err != nil {
+			return
+		}
+		b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+		early := `{"type":"cmd.data","cmdId":"c1","stream":"stdout","base64":"` + b64("early-out\n") + `"}`
+		earlyErr := `{"type":"cmd.data","cmdId":"c1","stream":"stderr","base64":"` + b64("early-err\n") + `"}`
+		exit := `{"type":"cmd.exit","cmdId":"c1","exitCode":3}`
+		reply := `{"id":"1","ok":true,"result":{"cmdId":"c1"}}`
+		// One message: output and exit first, the reply last.
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(early+"\n"+earlyErr+"\n"+exit+"\n"+reply+"\n"))
+		time.Sleep(200 * time.Millisecond)
+	})
+	defer closeSrv()
+
+	sb := newTestSandbox(wsURL)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sb.Close()
+
+	var gotOut, gotErr string
+	res, err := sb.Commands.Run(ctx, "x", CommandOptions{
+		OnStdout: func(s string) { gotOut += s },
+		OnStderr: func(s string) { gotErr += s },
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.ExitCode != 3 || res.Stdout != "early-out\n" || res.Stderr != "early-err\n" {
+		t.Errorf("result lost early output: %+v", res)
+	}
+	if gotOut != "early-out\n" || gotErr != "early-err\n" {
+		t.Errorf("callbacks: out=%q err=%q", gotOut, gotErr)
+	}
+}
+
+// TimeoutMs is a command deadline on the WebSocket path too: the command is killed and the result is exit -1
+// with the output so far (it used to be honoured only by the REST /exec fast path).
+func TestCommandsRunTimeoutKillsCommand(t *testing.T) {
+	killed := make(chan string, 1)
+	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
+		if _, err := readOneFrame(conn); err != nil {
+			return
+		}
+		out := base64.StdEncoding.EncodeToString([]byte("partial\n"))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(
+			`{"id":"1","ok":true,"result":{"cmdId":"c1"}}`+"\n"+
+				`{"type":"cmd.data","cmdId":"c1","stream":"stdout","base64":"`+out+`"}`+"\n"))
+		// The next frame must be cmd.kill; the command never exits on its own.
+		if frame, err := readOneFrame(conn); err == nil {
+			killed <- frame
+			var req struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal([]byte(frame), &req)
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"`+req.ID+`","ok":true,"result":{"ok":true}}`+"\n"))
+		}
+		time.Sleep(200 * time.Millisecond)
+	})
+	defer closeSrv()
+
+	sb := newTestSandbox(wsURL)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sb.Close()
+
+	start := time.Now()
+	res, err := sb.Commands.Run(ctx, "sleep", CommandOptions{Args: []string{"3600"}, TimeoutMs: 80})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("run did not honour TimeoutMs: took %v", time.Since(start))
+	}
+	if res.ExitCode != -1 || res.Stdout != "partial\n" {
+		t.Errorf("want exit -1 with partial output, got %+v", res)
+	}
+	select {
+	case frame := <-killed:
+		if !strings.Contains(frame, `"cmd.kill"`) || !strings.Contains(frame, `"signal":9`) {
+			t.Errorf("expected cmd.kill with signal 9, got %s", frame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("cmd.kill was never sent")
+	}
+}
+
 // A channel close while a command is awaiting cmd.exit must reject the wait
 // (it's frame-based, not a pending RPC) instead of hanging forever.
 func TestChannelCloseRejectsInflightCommand(t *testing.T) {
@@ -316,4 +411,126 @@ func TestOnFrameReplayKeepsOrderAgainstLiveFrames(t *testing.T) {
 	if strings.Join(got, "") != "ab" {
 		t.Fatalf("frames out of order or lost: got %q, want %q", strings.Join(got, ""), "ab")
 	}
+}
+
+// echoServer replies {ok:true,result:{}} to every request on every connection.
+func echoServer(t *testing.T) (string, func()) {
+	t.Helper()
+	return startMockControlServer(t, func(conn *websocket.Conn) {
+		for {
+			frame, err := readOneFrame(conn)
+			if err != nil {
+				return
+			}
+			var req struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal([]byte(frame), &req)
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"`+req.ID+`","ok":true,"result":{}}`+"\n"))
+		}
+	})
+}
+
+// close() racing an in-flight call must not nil-dereference c.conn (it used to panic, and trips -race).
+func TestChannelCloseRacingInflightCallDoesNotPanic(t *testing.T) {
+	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
+		for { // read requests, never reply
+			if _, err := readOneFrame(conn); err != nil {
+				return
+			}
+		}
+	})
+	defer closeSrv()
+
+	for i := 0; i < 40; i++ {
+		ch := newChannel(wsURL, nil, 2*time.Second)
+		if err := ch.connect(context.Background()); err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		done := make(chan error, 8)
+		for j := 0; j < 8; j++ {
+			go func() {
+				_, err := ch.call(context.Background(), "x", nil, callOptions{})
+				done <- err
+			}()
+		}
+		time.Sleep(time.Duration(i%5) * time.Millisecond)
+		ch.close()
+		for j := 0; j < 8; j++ {
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatalf("call succeeded on a closed channel")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("call did not return after close()")
+			}
+		}
+	}
+}
+
+// The reader of an OLD socket finishing late must not mark the NEW connection disconnected.
+func TestStaleReaderCloseDoesNotKillNewConnection(t *testing.T) {
+	wsURL, closeSrv := echoServer(t)
+	defer closeSrv()
+	ctx := context.Background()
+	ch := newChannel(wsURL, nil, 2*time.Second)
+	if err := ch.connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	ch.mu.Lock()
+	old := ch.conn
+	ch.mu.Unlock()
+	ch.close()
+	if err := ch.connect(ctx); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	ch.onClose(old, errors.New("late close of the old socket"))
+	if !ch.isConnected() {
+		t.Fatal("a stale reader's close marked the new connection disconnected")
+	}
+	if _, err := ch.call(ctx, "ping", nil, callOptions{}); err != nil {
+		t.Fatalf("call on the new connection failed: %v", err)
+	}
+	ch.close()
+}
+
+// A partial line from a dead connection must not be glued to the next connection's first frame.
+func TestPartialLineDoesNotSurviveReconnect(t *testing.T) {
+	first := true
+	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
+		if first {
+			first = false
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","ok":tr`)) // no newline, then the socket dies
+			conn.Close()
+			return
+		}
+		frame, err := readOneFrame(conn)
+		if err != nil {
+			return
+		}
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal([]byte(frame), &req)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"`+req.ID+`","ok":true,"result":{"v":1}}`+"\n"))
+	})
+	defer closeSrv()
+	ctx := context.Background()
+	ch := newChannel(wsURL, nil, 2*time.Second)
+	if err := ch.connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for ch.isConnected() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := ch.reconnect(ctx); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	raw, err := ch.call(ctx, "ping", nil, callOptions{})
+	if err != nil || !strings.Contains(string(raw), `"v":1`) {
+		t.Fatalf("first frame on the new connection was corrupted: raw=%s err=%v", raw, err)
+	}
+	ch.close()
 }

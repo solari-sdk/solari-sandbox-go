@@ -199,39 +199,48 @@ func (c *channel) reconnect(ctx context.Context) error {
 		return nil
 	}
 	c.mu.Lock()
-	if c.conn != nil {
-		c.conn.Close()
-		c.conn = nil
-	}
+	old := c.conn
+	c.conn = nil
 	c.mu.Unlock()
+	if old != nil {
+		old.Close()
+		// The old socket's reader no longer fails the channel (see onClose), so reject what was in
+		// flight on it here: those replies can never arrive.
+		c.failAll(newConnectionError("Control channel reconnecting"))
+	}
 	return c.connect(ctx)
 }
 
 func (c *channel) readLoop(conn *websocket.Conn) {
+	// Each socket has its own partial-line buffer: a fragment from a dead connection must
+	// never be glued to the first frame of the next one.
+	var buf []byte
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			c.onClose(err)
+			c.onClose(conn, err)
 			return
 		}
-		c.feed(msg)
+		c.feedBuf(&buf, msg)
 	}
 }
 
 // feed accumulates bytes and dispatches every complete newline-delimited frame.
 // Exposed (unexported) so tests can drive framing directly without a socket.
-func (c *channel) feed(chunk []byte) {
-	c.rxBuffer = append(c.rxBuffer, chunk...)
+func (c *channel) feed(chunk []byte) { c.feedBuf(&c.rxBuffer, chunk) }
+
+func (c *channel) feedBuf(buf *[]byte, chunk []byte) {
+	*buf = append(*buf, chunk...)
 	for {
-		i := bytes.IndexByte(c.rxBuffer, '\n')
+		i := bytes.IndexByte(*buf, '\n')
 		if i < 0 {
 			break
 		}
-		line := bytes.TrimSpace(c.rxBuffer[:i])
-		rest := c.rxBuffer[i+1:]
+		line := bytes.TrimSpace((*buf)[:i])
+		rest := (*buf)[i+1:]
 		// Copy the remaining tail into a fresh buffer so dispatching a cloned
 		// line can't be aliased by later appends.
-		c.rxBuffer = append([]byte(nil), rest...)
+		*buf = append([]byte(nil), rest...)
 		if len(line) > 0 {
 			c.dispatch(append([]byte(nil), line...))
 		}
@@ -312,8 +321,15 @@ func (c *channel) dispatch(line []byte) {
 	}
 }
 
-func (c *channel) onClose(err error) {
+// onClose is called by the read loop of `conn` when its socket ends. It only acts if `conn` is still the
+// channel's current socket: a reader of an old socket (replaced by Reconnect/Resume, or closed by close())
+// finishing late must not mark the NEW connection disconnected or fail its calls.
+func (c *channel) onClose(conn *websocket.Conn, err error) {
 	c.mu.Lock()
+	if c.conn != conn {
+		c.mu.Unlock()
+		return
+	}
 	c.connected = false
 	c.conn = nil
 	c.mu.Unlock()
@@ -456,6 +472,10 @@ func (c *channel) call(ctx context.Context, method string, params interface{}, o
 		c.mu.Unlock()
 		return nil, newConnectionError("Not connected — call Connect() first")
 	}
+	// Take the socket under the lock: close()/onClose() nil c.conn concurrently, and a read of
+	// c.conn after the unlock below was a nil dereference (and a data race) when Kill/Close/Pause
+	// raced an in-flight call.
+	conn := c.conn
 	id := opts.id
 	if id == "" {
 		id = c.newIDLocked()
@@ -475,7 +495,7 @@ func (c *channel) call(ctx context.Context, method string, params interface{}, o
 	frame = append(frame, '\n')
 
 	c.writeMu.Lock()
-	werr := c.conn.WriteMessage(websocket.TextMessage, frame)
+	werr := conn.WriteMessage(websocket.TextMessage, frame)
 	c.writeMu.Unlock()
 	if werr != nil {
 		c.removePending(id)
