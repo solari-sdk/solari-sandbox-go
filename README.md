@@ -116,7 +116,7 @@ switch {
 case errors.As(err, &cap):
 	// org at its live-session cap (HTTP 429) — not retryable
 case errors.As(err, &auth):
-	// bad/missing API key (HTTP 401/403)
+	// bad/missing API key (HTTP 401)
 }
 ```
 

@@ -37,24 +37,31 @@ type GatewayError struct {
 func (e *GatewayError) Error() string { return e.Message }
 func (e *GatewayError) Unwrap() error { return &e.SolariError }
 
-// AuthError maps HTTP 401/403 — the API key was missing, malformed, or rejected.
+// AuthError maps HTTP 401 — the API key was missing, malformed, or rejected.
 type AuthError struct{ GatewayError }
 
 func (e *AuthError) Unwrap() error { return &e.GatewayError }
 
-// PlanError maps HTTP 402 (or a plan_* body) — the plan doesn't allow this.
+// PlanError means the plan doesn't allow this: HTTP 402 (FeatureRequiresPlan,
+// InsufficientCredit) or 403 {code:"NotEntitled"} (the plan does not include
+// sandboxes/desktops). Status is the status the gateway really sent.
 type PlanError struct{ GatewayError }
 
 func (e *PlanError) Unwrap() error { return &e.GatewayError }
 
-// ConcurrencyLimitError maps HTTP 429 — the org is at its live-session cap. It
-// is NOT retryable (retrying won't help).
+// ConcurrencyLimitError maps HTTP 429 {code:"ConcurrencyLimitExceeded"} (or a
+// 429 with no code) — the org is at its live-session cap. It is NOT retryable
+// (retrying won't help). Other 429s (TooManyExecutions, a per-sandbox limit,
+// ObjectLimit, the template caps) are plain *GatewayError with the gateway's Code.
 type ConcurrencyLimitError struct{ GatewayError }
 
 func (e *ConcurrencyLimitError) Unwrap() error { return &e.GatewayError }
 
-// NoCapacityError maps HTTP 503 (or a no_capacity body) — no host currently
-// available. Retryable.
+// NoCapacityError maps HTTP 503 {code:"NoCapacity"|"StartTimeout"} (or a 503
+// with no code) — no host currently available. Retryable. Other 503s
+// (SandboxUnavailable, StoreUnavailable, AdmissionUnavailable,
+// DependencyUnavailable) are plain *GatewayError: the sandbox, store or
+// admission service is unavailable, which is not a capacity problem.
 type NoCapacityError struct{ GatewayError }
 
 func (e *NoCapacityError) Unwrap() error { return &e.GatewayError }
@@ -132,18 +139,36 @@ func mapGatewayError(status int, body *GatewayErrorBody) error {
 		}
 	}
 
+	// Code is the discriminator (PROTOCOL.md section 4); the status alone is
+	// not enough because one status carries several meanings. A response with
+	// no code keeps the type its status has always had.
+	plain := func(defMsg string) error {
+		g := build(defMsg)
+		return &g
+	}
 	switch status {
-	case 401, 403:
+	case 401:
 		return &AuthError{build("Invalid or missing API key")}
 	case 402:
 		return &PlanError{build("This feature requires a different plan")}
+	case 403:
+		// The gateway's only JSON 403 is NotEntitled (the plan does not include sandboxes/desktops).
+		if code == "NotEntitled" {
+			return &PlanError{build("This feature requires a different plan")}
+		}
+		return plain("Forbidden")
 	case 429:
-		return &ConcurrencyLimitError{build("Concurrency limit exceeded")}
+		if code == "" || code == "ConcurrencyLimitExceeded" {
+			return &ConcurrencyLimitError{build("Concurrency limit exceeded")}
+		}
+		return plain("Too many requests")
 	case 503:
-		return &NoCapacityError{build("No host available")}
+		if code == "" || code == "NoCapacity" || code == "StartTimeout" {
+			return &NoCapacityError{build("No host available")}
+		}
+		return plain("Service unavailable")
 	default:
-		g := build(fmt.Sprintf("Gateway request failed with status %d", status))
-		return &g
+		return plain(fmt.Sprintf("Gateway request failed with status %d", status))
 	}
 }
 
