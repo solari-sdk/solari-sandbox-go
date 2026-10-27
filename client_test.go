@@ -335,3 +335,23 @@ func TestSandboxStartNeedsClientHandle(t *testing.T) {
 		t.Error("want error for a handle without a client")
 	}
 }
+
+func TestNewClientDefaultsBaseURL(t *testing.T) {
+	if DefaultBaseURL != "https://api.getsolari.com" {
+		t.Fatalf("DefaultBaseURL = %q", DefaultBaseURL)
+	}
+	c, err := NewClient(ClientOptions{APIKey: "k"})
+	if err != nil {
+		t.Fatalf("NewClient with no BaseURL: %v", err)
+	}
+	if c.http.baseURL != DefaultBaseURL {
+		t.Fatalf("baseURL = %q, want %q", c.http.baseURL, DefaultBaseURL)
+	}
+	c, err = NewClient(ClientOptions{APIKey: "k", BaseURL: "https://gw.example.com/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.http.baseURL != "https://gw.example.com" {
+		t.Fatalf("explicit BaseURL not kept: %q", c.http.baseURL)
+	}
+}

@@ -13,11 +13,15 @@ import (
 	"time"
 )
 
+// DefaultBaseURL is the hosted Solari API, used when ClientOptions.BaseURL is empty.
+const DefaultBaseURL = "https://api.getsolari.com"
+
 // ClientOptions configure a Client.
 type ClientOptions struct {
 	// APIKey authenticates every REST request and control-WS upgrade.
 	APIKey string
-	// BaseURL is the gateway origin, e.g. https://gw.example.com.
+	// BaseURL is the gateway origin. Leave it empty for the hosted Solari API
+	// (DefaultBaseURL); set it for a self-hosted or staging gateway.
 	BaseURL string
 	// HTTPClient overrides the default HTTP client (mainly for tests).
 	HTTPClient *http.Client
@@ -38,6 +42,9 @@ type Client struct {
 
 // NewClient constructs a Client.
 func NewClient(opts ClientOptions) (*Client, error) {
+	if opts.BaseURL == "" {
+		opts.BaseURL = DefaultBaseURL
+	}
 	retryDelay := -1
 	if opts.RetryDelayMs != nil {
 		retryDelay = *opts.RetryDelayMs

@@ -42,8 +42,8 @@ func main() {
 	ctx := context.Background()
 
 	client, err := solari.NewClient(solari.ClientOptions{
-		APIKey:  "slr_live_…",
-		BaseURL: "https://gw.example.com",
+		APIKey: "slr_live_…",
+		// BaseURL defaults to https://api.getsolari.com; set it only for another gateway.
 	})
 	if err != nil {
 		log.Fatal(err)
