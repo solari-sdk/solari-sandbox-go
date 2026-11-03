@@ -251,10 +251,16 @@ stdout **client-side**. Port the exact arg construction + parsers from the
 reference `git` namespace (`handle.ts` `git = {…}` / Python `_Git`). Methods:
 
 - **`clone(url, {path?, branch?, depth?, username?, password?, cwd?})`** — build
-  args `["clone", ("--depth",N)?, ("--branch",B)?, authUrl, path?]`. `authUrl`
-  injects basic-auth into an `https://` URL: parse it, URL-encode username and
-  password, set userinfo → `https://<enc-user>:<enc-pass>@host/…`; on any parse
-  failure return the URL unchanged. Verify: `p@ss word` → `p%40ss%20word`.
+  args `[<cred cfg>?, "clone", ("--depth",N)?, ("--branch",B)?, "--", url, path?]`.
+  Credentials never go in the URL or argv: with a username or password the call
+  prepends `-c credential.helper=` (clears other helpers) and
+  `-c credential.helper=!f() { test "$1" = get && printf "username=%s\npassword=%s\n" "$SOLARI_GIT_USERNAME" "$SOLARI_GIT_PASSWORD"; }; f`,
+  and runs git with the environment variables `SOLARI_GIT_USERNAME`,
+  `SOLARI_GIT_PASSWORD` and `GIT_TERMINAL_PROMPT=0` (so `.git/config` keeps the
+  plain URL and `/proc/<pid>/cmdline` has no secret). Refuse a username or
+  password containing CR, LF or NUL. Mask the password in error messages.
+  Verify: after a private clone `.git/config` contains the plain URL and no
+  password, and no argv built by the SDK contains it.
 - **`status(cwd?)` → `GitStatus`** — run `git status --porcelain=v1 --branch`.
   Parse: first `## …` line gives branch + ahead/behind. `## HEAD (no branch)` →
   `detached:true`, empty branch. `## No commits yet on <b>` → branch `<b>`.
@@ -270,11 +276,10 @@ reference `git` namespace (`handle.ts` `git = {…}` / Python `_Git`). Methods:
   `[("-c","user.name=<author>")?, ("-c","user.email=<email>")?, "commit", "-m", message, ("-a")?]`,
   then `git rev-parse HEAD` (cwd) → trimmed `hash`.
 - **`push({cwd?, remote?, branch?, username?, password?})`** and
-  **`pull(...)`** — when creds given, use a one-off authed remote via
-  `["-c", "url.<authUrl>.insteadOf=<plainUrl>", "push"/"pull", remote?, branch?]`
-  so the token never persists in `.git/config`. Without creds, just
-  `["push"/"pull", remote?, branch?]`.
-- **`checkout(ref, {cwd?, create?})`** — `["checkout", ("-b")?, ref]`.
+  **`pull(...)`** — `[<cred cfg>?, "push"/"pull", "--", remote, branch?]` with `remote`
+  defaulting to `origin`; credentials exactly as in `clone` (env + inline helper). Refuse a
+  `remote` or `branch` that starts with `-`.
+- **`checkout(ref, {cwd?, create?})`** — `["checkout", ("-b")?, ref, "--"]`; refuse a `ref` that starts with `-`.
 - **`branches(cwd?)` → `GitBranch[]`** — `git branch --format=%(HEAD)%1f%(refname:short)%1f%(objectname:short)`.
   Split each line on `\x1f`: field0 `*`→current, field1 name, field2 short commit.
   `GitBranch = {name, commit, current}`.

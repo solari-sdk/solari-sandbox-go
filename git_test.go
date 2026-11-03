@@ -12,6 +12,7 @@ type gitCall struct {
 	cmd  string
 	args []string
 	cwd  string
+	env  map[string]string
 }
 
 // stubGit builds a Git whose runner records calls and maps `git <args>` to a
@@ -20,7 +21,7 @@ type gitCall struct {
 func stubGit(responder func(args []string) *CommandResult) (*Git, *[]gitCall) {
 	calls := &[]gitCall{}
 	run := func(ctx context.Context, cmd string, opts CommandOptions) (*CommandResult, error) {
-		*calls = append(*calls, gitCall{cmd: cmd, args: opts.Args, cwd: opts.Cwd})
+		*calls = append(*calls, gitCall{cmd: cmd, args: opts.Args, cwd: opts.Cwd, env: opts.Env})
 		r := responder(opts.Args)
 		if r == nil {
 			r = &CommandResult{}
@@ -187,7 +188,7 @@ func TestGitCommitSetsIdentityThenResolvesHash(t *testing.T) {
 	}
 }
 
-func TestGitCloneInjectsBasicAuth(t *testing.T) {
+func TestGitCloneSendsCredentialsByEnvAndInlineHelperNeverInURLOrArgv(t *testing.T) {
 	g, calls := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
 	err := g.Clone(context.Background(), "https://github.com/acme/repo.git", GitCloneOptions{
 		Branch: "main", Depth: 1, Username: "u", Password: "p@ss word", Path: "dest", Cwd: "/work",
@@ -199,15 +200,46 @@ func TestGitCloneInjectsBasicAuth(t *testing.T) {
 	if c.cwd != "/work" {
 		t.Errorf("cwd: %q", c.cwd)
 	}
-	if !reflect.DeepEqual(c.args[:5], []string{"clone", "--depth", "1", "--branch", "main"}) {
-		t.Fatalf("args prefix: %v", c.args[:5])
+	if !reflect.DeepEqual(c.args[:3], []string{"-c", "credential.helper=", "-c"}) || !strings.HasPrefix(c.args[3], "credential.helper=!f()") {
+		t.Fatalf("helper options: %v", c.args[:4])
 	}
-	url := c.args[5]
-	if !strings.HasPrefix(url, "https://u:p%40ss%20word@github.com/") {
-		t.Fatalf("auth url: %q", url)
+	want := []string{"clone", "--depth", "1", "--branch", "main", "--", "https://github.com/acme/repo.git", "dest"}
+	if !reflect.DeepEqual(c.args[4:], want) {
+		t.Fatalf("args: %v", c.args[4:])
 	}
-	if c.args[6] != "dest" {
-		t.Errorf("path arg: %q", c.args[6])
+	if c.env["SOLARI_GIT_USERNAME"] != "u" || c.env["SOLARI_GIT_PASSWORD"] != "p@ss word" || c.env["GIT_TERMINAL_PROMPT"] != "0" {
+		t.Errorf("env: %v", c.env)
+	}
+	for _, a := range c.args {
+		if strings.Contains(a, "p@ss") || strings.Contains(a, "p%40ss") || strings.Contains(a, "u:") {
+			t.Errorf("credential in argv: %q", a)
+		}
+	}
+}
+
+func TestGitClonePutsDashDashBeforeUserURLAndSendsNoHelperWithoutCreds(t *testing.T) {
+	g, calls := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
+	if err := g.Clone(context.Background(), "--upload-pack=touch /tmp/pwned", GitCloneOptions{Path: "dest"}); err != nil {
+		t.Fatal(err)
+	}
+	c := (*calls)[0]
+	if !reflect.DeepEqual(c.args, []string{"clone", "--", "--upload-pack=touch /tmp/pwned", "dest"}) || c.env != nil {
+		t.Errorf("args %v env %v", c.args, c.env)
+	}
+}
+
+func TestGitCredentialsWithLineBreaksAreRefusedAndPasswordIsMaskedInErrors(t *testing.T) {
+	g, _ := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
+	err := g.Clone(context.Background(), "https://h/r.git", GitCloneOptions{Username: "u", Password: "a\nurl=https://evil"})
+	if err == nil || !strings.Contains(err.Error(), "line breaks") {
+		t.Errorf("want a line-break refusal, got %v", err)
+	}
+	g2, _ := stubGit(func(args []string) *CommandResult {
+		return &CommandResult{ExitCode: 128, Stderr: "fatal: unable to access: hunter2 rejected"}
+	})
+	err = g2.Clone(context.Background(), "https://h/r.git", GitCloneOptions{Username: "u", Password: "hunter2"})
+	if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), "git clone failed") {
+		t.Errorf("want a masked clone error, got %v", err)
 	}
 }
 
@@ -243,74 +275,59 @@ func TestGitNonZeroExitSurfacesError(t *testing.T) {
 	}
 }
 
-func TestGitPushInjectsInsteadOfAuthThenPushes(t *testing.T) {
-	g, calls := stubGit(func(args []string) *CommandResult {
-		// Only the URL-resolve leg is scripted; the push itself exits clean.
-		if len(args) >= 2 && args[0] == "remote" && args[1] == "get-url" {
-			return &CommandResult{Stdout: "https://github.com/acme/repo.git\n"}
-		}
-		return nil
-	})
-	err := g.Push(context.Background(), GitRemoteOptions{
-		Cwd: "/repo", Username: "u", Password: "p@ss", Branch: "main",
-	})
+func TestGitPushUsesEnvAndHelperWithNoRemoteRewriteAndNoSecretInArgv(t *testing.T) {
+	g, calls := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
+	err := g.Push(context.Background(), GitRemoteOptions{Cwd: "/repo", Username: "u", Password: "p@ss", Branch: "main"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 1) resolve the remote's plain URL.
-	if !reflect.DeepEqual((*calls)[0].args, []string{"remote", "get-url", "origin"}) {
-		t.Fatalf("url-resolve args: %v", (*calls)[0].args)
+	if len(*calls) != 1 {
+		t.Fatalf("no `remote get-url` leg expected any more, got %d calls", len(*calls))
 	}
-	if (*calls)[0].cwd != "/repo" {
-		t.Errorf("cwd: %q", (*calls)[0].cwd)
+	push := (*calls)[0].args
+	if !reflect.DeepEqual(push[:2], []string{"-c", "credential.helper="}) || !reflect.DeepEqual(push[4:], []string{"push", "--", "origin", "main"}) {
+		t.Errorf("push args: %v", push)
 	}
-	// 2) push under a one-off -c url.<authed>.insteadOf=<plain> (creds never persisted).
-	push := (*calls)[1].args
-	if push[0] != "-c" {
-		t.Fatalf("expected -c first, got %v", push)
-	}
-	want := "url.https://u:p%40ss@github.com/acme/repo.git.insteadOf=https://github.com/acme/repo.git"
-	if push[1] != want {
-		t.Errorf("insteadOf:\n got %q\nwant %q", push[1], want)
-	}
-	if !reflect.DeepEqual(push[2:], []string{"push", "origin", "main"}) {
-		t.Errorf("push tail: %v", push[2:])
+	if (*calls)[0].env["SOLARI_GIT_PASSWORD"] != "p@ss" || strings.Contains(strings.Join(push, " "), "p@ss") {
+		t.Errorf("password handling wrong: env %v args %v", (*calls)[0].env, push)
 	}
 }
 
-func TestGitPushWithoutCredsSkipsUrlRewrite(t *testing.T) {
+func TestGitPushWithoutCredsIsAPlainPush(t *testing.T) {
 	g, calls := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
 	if err := g.Push(context.Background(), GitRemoteOptions{Cwd: "/repo"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(*calls) != 1 {
-		t.Fatalf("no `remote get-url` leg expected without creds, got %d calls", len(*calls))
-	}
-	if !reflect.DeepEqual((*calls)[0].args, []string{"push", "origin"}) {
-		t.Errorf("push args: %v", (*calls)[0].args)
+	if len(*calls) != 1 || !reflect.DeepEqual((*calls)[0].args, []string{"push", "--", "origin"}) || (*calls)[0].env != nil {
+		t.Errorf("calls: %+v", *calls)
 	}
 }
 
 func TestGitPullSharesAuthPathWithCustomRemote(t *testing.T) {
-	g, calls := stubGit(func(args []string) *CommandResult {
-		if len(args) >= 1 && args[0] == "remote" {
-			return &CommandResult{Stdout: "https://github.com/acme/repo.git\n"}
-		}
-		return nil
-	})
-	err := g.Pull(context.Background(), GitRemoteOptions{Remote: "upstream", Username: "u", Password: "p"})
-	if err != nil {
+	g, calls := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
+	if err := g.Pull(context.Background(), GitRemoteOptions{Remote: "upstream", Username: "u", Password: "p"}); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual((*calls)[0].args, []string{"remote", "get-url", "upstream"}) {
-		t.Fatalf("url-resolve args: %v", (*calls)[0].args)
+	pull := (*calls)[0].args
+	if !reflect.DeepEqual(pull[4:], []string{"pull", "--", "upstream"}) || (*calls)[0].env["SOLARI_GIT_USERNAME"] != "u" {
+		t.Errorf("pull: %v env %v", pull, (*calls)[0].env)
 	}
-	pull := (*calls)[1].args
-	if pull[0] != "-c" {
-		t.Fatalf("expected -c first, got %v", pull)
+}
+
+func TestGitRefusesOptionLikeRemotesBranchesAndRefs(t *testing.T) {
+	g, calls := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
+	ctx := context.Background()
+	if err := g.Push(ctx, GitRemoteOptions{Remote: "--receive-pack=x"}); err == nil {
+		t.Error("push remote")
 	}
-	if !reflect.DeepEqual(pull[2:], []string{"pull", "upstream"}) {
-		t.Errorf("pull tail: %v", pull[2:])
+	if err := g.Pull(ctx, GitRemoteOptions{Branch: "--rebase"}); err == nil {
+		t.Error("pull branch")
+	}
+	if err := g.Checkout(ctx, "--orphan=x", "", false); err == nil {
+		t.Error("checkout ref")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("nothing should reach the guest, got %d calls", len(*calls))
 	}
 }
 
@@ -319,13 +336,13 @@ func TestGitCheckoutSwitchesRefAndCreateAddsDashB(t *testing.T) {
 	if err := g.Checkout(context.Background(), "dev", "/repo", false); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual((*calls)[0].args, []string{"checkout", "dev"}) {
+	if !reflect.DeepEqual((*calls)[0].args, []string{"checkout", "dev", "--"}) {
 		t.Errorf("checkout args: %v", (*calls)[0].args)
 	}
 	if err := g.Checkout(context.Background(), "feature", "/repo", true); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual((*calls)[1].args, []string{"checkout", "-b", "feature"}) {
+	if !reflect.DeepEqual((*calls)[1].args, []string{"checkout", "-b", "feature", "--"}) {
 		t.Errorf("checkout -b args: %v", (*calls)[1].args)
 	}
 }
