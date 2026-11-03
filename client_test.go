@@ -238,6 +238,91 @@ func TestExecFastPath(t *testing.T) {
 	}
 }
 
+// A 404 from /exec that is a gateway answer (JSON: the sandbox is gone) must reach the caller. It used to be read as
+// "route not served", fall back to the control WS, and surface as "call Connect() first".
+func TestExecDeletedSandboxIsNotMistakenForAMissingRoute(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/sandboxes":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"sandboxId":"sbx_1","kind":"sandbox","controlUrl":"ws://127.0.0.1:1/control/sbx_1","expiresAt":""}`))
+		case r.URL.Path == "/sandboxes/sbx_1/exec":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"error":"Not found","requestId":"req_1"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c, _ := NewClient(ClientOptions{APIKey: "k", BaseURL: srv.URL})
+	sb, err := c.Create(context.Background(), CreateOptions{Template: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = sb.Commands.Run(context.Background(), "true", CommandOptions{})
+	var ge *GatewayError
+	if !errors.As(err, &ge) || ge.Status != 404 {
+		t.Fatalf("err = %v, want the gateway's 404", err)
+	}
+}
+
+func TestIsRouteUnavailable(t *testing.T) {
+	plain := &GatewayError{SolariError: SolariError{Message: "404"}, Status: 404}
+	json404 := &GatewayError{SolariError: SolariError{Message: "gone"}, Status: 404, Body: &GatewayErrorBody{Error: "Not found"}}
+	coded := &GatewayError{SolariError: SolariError{Message: "x"}, Status: 404, Code: "SandboxNotFound", Body: &GatewayErrorBody{Code: "SandboxNotFound"}}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"plain-text 404 (no such route)", plain, true},
+		{"JSON 404 (sandbox gone)", json404, false},
+		{"coded 404", coded, false},
+		{"405", &GatewayError{Status: 405}, true},
+		{"501", &GatewayError{Status: 501}, true},
+		{"500", &GatewayError{Status: 500}, false},
+		{"not a gateway error", errors.New("boom"), false},
+	}
+	for _, c := range cases {
+		if got := isRouteUnavailable(c.err); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestExecTimedOutAndRecordingURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/sandboxes":
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"sandboxId":"sbx_1","kind":"desktop","controlUrl":"ws://127.0.0.1:1/control/sbx_1","expiresAt":"","recordingUrl":"https://rec.example/r/1"}`))
+		case "/sandboxes/sbx_1/exec":
+			_, _ = w.Write([]byte(`{"exitCode":-1,"stdout":"","stderr":"","timedOut":true}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c, _ := NewClient(ClientOptions{APIKey: "k", BaseURL: srv.URL})
+	sb, err := c.Create(context.Background(), CreateOptions{Template: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sb.RecordingURL != "https://rec.example/r/1" {
+		t.Errorf("RecordingURL = %q", sb.RecordingURL)
+	}
+	res, err := sb.Commands.Run(context.Background(), "sleep", CommandOptions{Args: []string{"30"}, TimeoutMs: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.TimedOut || res.ExitCode != -1 {
+		t.Errorf("result = %+v, want TimedOut with exit -1", res)
+	}
+}
+
 func asConcurrency(err error) (*ConcurrencyLimitError, bool) {
 	var e *ConcurrencyLimitError
 	if errors.As(err, &e) {

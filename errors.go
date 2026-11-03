@@ -176,10 +176,18 @@ func mapGatewayError(status int, body *GatewayErrorBody) error {
 // served (an older gateway) — the only case where runCommand retries over the
 // control WS. A real host/command failure is NOT route-unavailable and must
 // propagate.
+//
+// A 404 only means "no such route" when it is not a gateway answer: a missing
+// route comes back as a plain-text "404 Not Found", while a deleted or unknown
+// sandbox comes back as JSON ({"error":"Not found"}). The latter must propagate,
+// or the fallback hides it behind "call Connect() first".
 func isRouteUnavailable(err error) bool {
 	var ge *GatewayError
 	if errors.As(err, &ge) {
-		return ge.Status == 404 || ge.Status == 405 || ge.Status == 501
+		if ge.Status == 404 {
+			return ge.Body == nil || (ge.Body.Error == "" && ge.Body.Code == "" && ge.Body.Message == "")
+		}
+		return ge.Status == 405 || ge.Status == 501
 	}
 	return false
 }

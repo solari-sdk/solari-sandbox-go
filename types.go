@@ -148,6 +148,8 @@ type CreateSandboxResponse struct {
 	ControlURL string      `json:"controlUrl"`
 	ExpiresAt  string      `json:"expiresAt"`
 	StreamURL  string      `json:"streamUrl,omitempty"`
+	// RecordingURL is the session recording link, when the create asked for one.
+	RecordingURL string `json:"recordingUrl,omitempty"`
 }
 
 // SandboxView is the GET /sandboxes/{id} response (used by Connect).
@@ -183,6 +185,8 @@ type CommandResult struct {
 	ExitCode int    `json:"exitCode"`
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
+	// TimedOut is true when the command hit its TimeoutMs and was killed; ExitCode is -1 then.
+	TimedOut bool `json:"timedOut,omitempty"`
 }
 
 // execOneShotRequest is the body for the POST /sandboxes/{id}/exec fast path.
