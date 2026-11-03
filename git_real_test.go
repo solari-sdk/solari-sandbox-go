@@ -168,3 +168,37 @@ func TestGitHostileUploadPackURLIsJustABadRepository(t *testing.T) {
 		t.Error("the --upload-pack option was executed")
 	}
 }
+
+func TestGitRedirectToAnotherHostNeverReceivesThePassword(t *testing.T) {
+	gitBackend(t)
+	dir := t.TempDir()
+	// Server B is where A redirects to; it demands auth and records every Authorization header it sees.
+	var bSeen []string
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bSeen = append(bSeen, r.Header.Get("Authorization"))
+		w.Header().Set("WWW-Authenticate", `Basic realm="other"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer b.Close()
+	bURL := strings.Replace(b.URL, "127.0.0.1", "localhost", 1) // a different host than A's
+	// Server A answers every request with a 302 to B.
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, bURL+r.URL.RequestURI(), http.StatusFound)
+	}))
+	defer a.Close()
+
+	var argvs [][]string
+	g := newGit(realRunner(dir, &argvs))
+	err := g.Clone(context.Background(), a.URL+"/repo.git", GitCloneOptions{Path: filepath.Join(dir, "x"), Username: realUser, Password: realPass})
+	if err == nil {
+		t.Fatal("expected a clone failure")
+	}
+	if len(bSeen) == 0 {
+		t.Fatal("git did not follow the redirect, so the test proves nothing")
+	}
+	for _, h := range bSeen {
+		if h != "" {
+			t.Errorf("the redirect target received an Authorization header: %q", h)
+		}
+	}
+}

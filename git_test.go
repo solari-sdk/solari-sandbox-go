@@ -200,7 +200,7 @@ func TestGitCloneSendsCredentialsByEnvAndInlineHelperNeverInURLOrArgv(t *testing
 	if c.cwd != "/work" {
 		t.Errorf("cwd: %q", c.cwd)
 	}
-	if !reflect.DeepEqual(c.args[:3], []string{"-c", "credential.helper=", "-c"}) || !strings.HasPrefix(c.args[3], "credential.helper=!f()") {
+	if !reflect.DeepEqual(c.args[:3], []string{"-c", "credential.helper=", "-c"}) || !strings.HasPrefix(c.args[3], "credential.https://github.com.helper=!f()") {
 		t.Fatalf("helper options: %v", c.args[:4])
 	}
 	want := []string{"clone", "--depth", "1", "--branch", "main", "--", "https://github.com/acme/repo.git", "dest"}
@@ -275,21 +275,41 @@ func TestGitNonZeroExitSurfacesError(t *testing.T) {
 	}
 }
 
-func TestGitPushUsesEnvAndHelperWithNoRemoteRewriteAndNoSecretInArgv(t *testing.T) {
-	g, calls := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
+func TestGitPushResolvesRemoteURLBindsHelperToItsOriginAndKeepsSecretOutOfArgv(t *testing.T) {
+	g, calls := stubGit(func(args []string) *CommandResult {
+		if len(args) > 0 && args[0] == "remote" {
+			return &CommandResult{Stdout: "https://git.example.com:8443/acme/repo.git\n"}
+		}
+		return nil
+	})
 	err := g.Push(context.Background(), GitRemoteOptions{Cwd: "/repo", Username: "u", Password: "p@ss", Branch: "main"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(*calls) != 1 {
-		t.Fatalf("no `remote get-url` leg expected any more, got %d calls", len(*calls))
+	if !reflect.DeepEqual((*calls)[0].args, []string{"remote", "get-url", "--", "origin"}) || (*calls)[0].env != nil {
+		t.Fatalf("url-resolve leg: %+v", (*calls)[0])
 	}
-	push := (*calls)[0].args
-	if !reflect.DeepEqual(push[:2], []string{"-c", "credential.helper="}) || !reflect.DeepEqual(push[4:], []string{"push", "--", "origin", "main"}) {
+	push := (*calls)[1].args
+	if !reflect.DeepEqual(push[:2], []string{"-c", "credential.helper="}) || !strings.HasPrefix(push[3], "credential.https://git.example.com:8443.helper=!f()") || !reflect.DeepEqual(push[4:], []string{"push", "--", "origin", "main"}) {
 		t.Errorf("push args: %v", push)
 	}
-	if (*calls)[0].env["SOLARI_GIT_PASSWORD"] != "p@ss" || strings.Contains(strings.Join(push, " "), "p@ss") {
-		t.Errorf("password handling wrong: env %v args %v", (*calls)[0].env, push)
+	if (*calls)[1].env["SOLARI_GIT_PASSWORD"] != "p@ss" || strings.Contains(strings.Join(push, " "), "p@ss") {
+		t.Errorf("password handling wrong: env %v args %v", (*calls)[1].env, push)
+	}
+}
+
+func TestGitCredentialsAreNotUsedForAnSSHRemote(t *testing.T) {
+	g, calls := stubGit(func(args []string) *CommandResult {
+		if len(args) > 0 && args[0] == "remote" {
+			return &CommandResult{Stdout: "git@github.com:acme/repo.git\n"}
+		}
+		return nil
+	})
+	if err := g.Push(context.Background(), GitRemoteOptions{Cwd: "/repo", Username: "u", Password: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual((*calls)[1].args, []string{"push", "--", "origin"}) || (*calls)[1].env != nil {
+		t.Errorf("push: %+v", (*calls)[1])
 	}
 }
 
@@ -304,13 +324,21 @@ func TestGitPushWithoutCredsIsAPlainPush(t *testing.T) {
 }
 
 func TestGitPullSharesAuthPathWithCustomRemote(t *testing.T) {
-	g, calls := stubGit(func(args []string) *CommandResult { return &CommandResult{} })
+	g, calls := stubGit(func(args []string) *CommandResult {
+		if len(args) > 0 && args[0] == "remote" {
+			return &CommandResult{Stdout: "https://github.com/acme/repo.git\n"}
+		}
+		return nil
+	})
 	if err := g.Pull(context.Background(), GitRemoteOptions{Remote: "upstream", Username: "u", Password: "p"}); err != nil {
 		t.Fatal(err)
 	}
-	pull := (*calls)[0].args
-	if !reflect.DeepEqual(pull[4:], []string{"pull", "--", "upstream"}) || (*calls)[0].env["SOLARI_GIT_USERNAME"] != "u" {
-		t.Errorf("pull: %v env %v", pull, (*calls)[0].env)
+	if !reflect.DeepEqual((*calls)[0].args, []string{"remote", "get-url", "--", "upstream"}) {
+		t.Fatalf("url-resolve args: %v", (*calls)[0].args)
+	}
+	pull := (*calls)[1].args
+	if !reflect.DeepEqual(pull[4:], []string{"pull", "--", "upstream"}) || (*calls)[1].env["SOLARI_GIT_USERNAME"] != "u" {
+		t.Errorf("pull: %v env %v", pull, (*calls)[1].env)
 	}
 }
 

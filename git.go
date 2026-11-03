@@ -8,6 +8,7 @@ package solari
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -70,21 +71,34 @@ func (g *Git) mustGit(ctx context.Context, args []string, cwd string, env map[st
 // `store` / `erase`, and holds no secret.
 const gitCredentialHelper = `!f() { test "$1" = get && printf "username=%s\npassword=%s\n" "$SOLARI_GIT_USERNAME" "$SOLARI_GIT_PASSWORD"; }; f`
 
-// gitAuth returns the `-c` options and environment for ONE git command that must authenticate to a private https
-// remote. The credentials travel as environment variables of that command and git reads them back through the inline
-// helper, so they are never in the URL (and so not in .git/config, a snapshot or a template), never in argv
-// (/proc/<pid>/cmdline) and never in a config file. ok is false when there are no credentials.
-func gitAuth(username, password string) (cfg []string, env map[string]string, ok bool, err error) {
+// gitAuth returns the `-c` options and environment for ONE git command that must authenticate to a private http(s)
+// remote at remoteURL. The credentials travel as environment variables of that command and git reads them back through
+// the inline helper, so they are never in the URL (and so not in .git/config, a snapshot or a template), never in argv
+// (/proc/<pid>/cmdline) and never in a config file.
+//
+// The helper is bound to the remote's origin (`credential.<scheme>://<host>.helper`), so git never hands the password
+// to another host: a redirect to a different host, or a downgrade to http, gets nothing. ok is false when there are no
+// credentials or the remote is not http(s) (ssh remotes do not use them).
+func gitAuth(remoteURL, username, password string) (cfg []string, env map[string]string, ok bool, err error) {
 	if username == "" && password == "" {
 		return nil, nil, false, nil
 	}
 	if strings.ContainsAny(username, "\r\n\x00") || strings.ContainsAny(password, "\r\n\x00") {
 		return nil, nil, false, fmt.Errorf("git credentials must not contain line breaks or NUL")
 	}
+	u, perr := url.Parse(remoteURL)
+	if perr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, nil, false, nil
+	}
+	origin := u.Scheme + "://" + u.Host
+	if strings.ContainsAny(origin, "= \t\r\n") {
+		return nil, nil, false, nil
+	}
 	return []string{
-		// The empty value first clears any helper configured on the guest, so only ours answers.
+		// The empty value first clears any helper configured on the guest, so only ours answers...
 		"-c", "credential.helper=",
-		"-c", "credential.helper=" + gitCredentialHelper,
+		// ...and only for this origin.
+		"-c", "credential." + origin + ".helper=" + gitCredentialHelper,
 	}, map[string]string{
 		"GIT_TERMINAL_PROMPT": "0",
 		"SOLARI_GIT_USERNAME": username,
@@ -114,7 +128,7 @@ func rejectOptionLike(what, v string) error {
 
 // Clone clones url into opts.Path (or git's default dir) under opts.Cwd.
 func (g *Git) Clone(ctx context.Context, rawURL string, opts GitCloneOptions) error {
-	authCfg, env, _, err := gitAuth(opts.Username, opts.Password)
+	authCfg, env, _, err := gitAuth(rawURL, opts.Username, opts.Password)
 	if err != nil {
 		return err
 	}
@@ -253,16 +267,25 @@ func (g *Git) pushPull(ctx context.Context, op string, opts GitRemoteOptions) er
 	if err := rejectOptionLike("branch", opts.Branch); err != nil {
 		return err
 	}
-	authCfg, env, _, err := gitAuth(opts.Username, opts.Password)
-	if err != nil {
-		return err
+	var authCfg []string
+	var env map[string]string
+	if opts.Username != "" || opts.Password != "" {
+		// The helper is bound to the remote's origin, so resolve the remote's URL first.
+		plain, err := g.mustGit(ctx, []string{"remote", "get-url", "--", remote}, opts.Cwd, nil, "")
+		if err != nil {
+			return err
+		}
+		authCfg, env, _, err = gitAuth(strings.TrimSpace(plain), opts.Username, opts.Password)
+		if err != nil {
+			return err
+		}
 	}
 	args := append([]string{}, authCfg...)
 	args = append(args, op, "--", remote)
 	if opts.Branch != "" {
 		args = append(args, opts.Branch)
 	}
-	_, err = g.mustGit(ctx, args, opts.Cwd, env, opts.Password)
+	_, err := g.mustGit(ctx, args, opts.Cwd, env, opts.Password)
 	return err
 }
 
