@@ -228,6 +228,8 @@ type Sandbox struct {
 	// StreamURL is the live-view WebSocket URL. Set for KindDesktop only — the
 	// gateway omits it for headless sandboxes, which have no display to stream.
 	StreamURL string
+	// RecordingURL is the session recording link. Set when the create asked for a recording.
+	RecordingURL string
 
 	ch         *channel
 	execHook   func(ctx context.Context, id string, req execOneShotRequest) (*CommandResult, error)
@@ -255,17 +257,18 @@ func (c *Client) newSandbox(resp CreateSandboxResponse) (*Sandbox, error) {
 	callTimeout := time.Duration(c.callTimeoutMs) * time.Millisecond
 
 	sb := &Sandbox{
-		ID:         resp.SandboxID,
-		ControlURL: resp.ControlURL,
-		ExpiresAt:  resp.ExpiresAt,
-		Kind:       resp.Kind,
-		StreamURL:  resp.StreamURL,
-		ch:         newChannel(resp.ControlURL, header, callTimeout),
-		execHook:   c.exec,
-		killHook:   c.Kill,
-		pauseHook:  c.Pause,
-		resumeHook: c.Resume,
-		startHook:  c.Start,
+		ID:           resp.SandboxID,
+		ControlURL:   resp.ControlURL,
+		ExpiresAt:    resp.ExpiresAt,
+		Kind:         resp.Kind,
+		StreamURL:    resp.StreamURL,
+		RecordingURL: resp.RecordingURL,
+		ch:           newChannel(resp.ControlURL, header, callTimeout),
+		execHook:     c.exec,
+		killHook:     c.Kill,
+		pauseHook:    c.Pause,
+		resumeHook:   c.Resume,
+		startHook:    c.Start,
 	}
 	sb.Commands = &Commands{sb: sb}
 	sb.Files = &Files{sb: sb}

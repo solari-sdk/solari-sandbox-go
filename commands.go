@@ -255,15 +255,19 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 	}
 	code, err := handle.Wait(waitCtx)
 	cancel()
+	timedOut := false
 	if err != nil {
 		if opts.TimeoutMs > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			_ = handle.Kill(ctx, 9)
 			code = -1
+			timedOut = true
 		} else {
 			return nil, err
 		}
 	}
-	return acc.result(code), nil
+	res := acc.result(code)
+	res.TimedOut = timedOut
+	return res, nil
 }
 
 // cmdAccumulator collects a command's stdout/stderr for the CommandResult.
