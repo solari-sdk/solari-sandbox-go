@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3
+
+### Added
+- **`Files.Upload` and `Files.Download`** move a file in 4 MiB chunks (`fs.upload` / `fs.download`), so a large file never travels as one frame. A 48 MiB file used to be a 64 MiB frame that closed the control channel and failed every call in flight on it. `Files.Read` now reads through the same chunked loop (a guest image that predates `fs.download` is read with `fs.read`).
+
+### Changed
+- `Files.Write` refuses more than 32 MiB before sending anything (`file too large for a single call (N bytes, max 33554432): use files.upload()/files.download() or uploadUrl()`), so one big call fails alone and the channel stays up. Use `Upload` for larger files.
+
+### Fixed
+- **Cancelling `Commands.Run` (a cancelled context) stops the guest process.** It gets SIGTERM and a closed stdin at once and SIGKILL 2 s later if it is still running; before, it ran on. `Code.Run` asks the guest to interrupt the kernel (`code.interrupt`; a guest that does not know it is ignored). The one-shot `/exec` path needs nothing: the gateway kills the process when the request goes away.
+- **`CommandHandle.Wait` can be called more than once, and from several goroutines;** the second call used to block until its context ended.
+- **A callback may make calls.** Output callbacks ran on the control socket's read loop, so a callback that called `Stdin`, `Kill` or read a file stalled the channel until the call timed out. Callbacks now run on a goroutine per command, in order, and `Wait` returns after the last one.
+- **Concurrent `Connect` calls open one socket,** not one each (the extras leaked with their reader goroutines).
+
 ## 0.3.2
 
 ### Fixed

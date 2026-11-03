@@ -1,6 +1,9 @@
 package solari
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Code is the stateful-kernel namespace on a Sandbox (code.run).
 type Code struct {
@@ -21,6 +24,9 @@ func (c *Code) Run(ctx context.Context, code string, opts RunCodeOptions) (*RunC
 
 	raw, err := c.sb.ch.call(ctx, "code.run", params, callOptions{})
 	if err != nil {
+		if ctx.Err() != nil {
+			go c.interrupt(opts.ContextID) // in the background: the cancelled caller must not wait for the guest
+		}
 		return nil, err
 	}
 
@@ -48,6 +54,18 @@ func (c *Code) Run(ctx context.Context, code string, opts RunCodeOptions) (*RunC
 	}
 	r.Charts = charts
 	return &r, nil
+}
+
+// interrupt asks the guest to stop the code that a cancelled Run left executing (code.interrupt). Best effort: a guest image
+// that predates the method answers "unknown method", and the call may fail for any other reason; none of it matters here.
+func (c *Code) interrupt(contextID string) {
+	params := map[string]interface{}{}
+	if contextID != "" {
+		params["contextId"] = contextID
+	}
+	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = c.sb.ch.call(bg, "code.interrupt", params, callOptions{})
 }
 
 // CreateContext creates a fresh stateful kernel context (code.context.create),
