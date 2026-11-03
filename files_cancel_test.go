@@ -228,7 +228,10 @@ func TestCancelledCodeRunInterruptsTheKernel(t *testing.T) {
 		if q.Method == "code.run" {
 			return noReply, "" // never answers
 		}
-		return nil, "unknown method: code.interrupt" // an older guest: must be ignored
+		if q.Method == "code.interrupt" {
+			return nil, "unknown method: code.interrupt" // today's guest: must be ignored
+		}
+		return map[string]interface{}{"ok": true}, ""
 	})
 	defer done()
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -244,5 +247,12 @@ func TestCancelledCodeRunInterruptsTheKernel(t *testing.T) {
 	}
 	if rec.all()[1].Params["contextId"] != "k1" {
 		t.Errorf("interrupt params = %v", rec.all()[1].Params)
+	}
+	// Today's guests do not know code.interrupt: that must not tear the channel down or surface anywhere.
+	if !sb.Connected() {
+		t.Fatal("the channel was torn down by the unknown-method reply")
+	}
+	if err := sb.Files.Mkdir(context.Background(), "/still-works"); err != nil {
+		t.Fatalf("the channel is unusable after a cancelled code.run: %v", err)
 	}
 }
