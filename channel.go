@@ -86,6 +86,10 @@ type channel struct {
 	writeMu sync.Mutex
 	conn    *websocket.Conn
 
+	// connectMu serialises connect: concurrent callers each dialed, and the last socket won while the others leaked
+	// (with their reader goroutines).
+	connectMu sync.Mutex
+
 	// rxBuffer accumulates partial reads; touched only by the read loop / feed.
 	rxBuffer []byte
 
@@ -138,6 +142,11 @@ func (c *channel) setControlURL(url string) {
 // full connect timeout is NOT retried.
 func (c *channel) connect(ctx context.Context) error {
 	if c.isConnected() {
+		return nil
+	}
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
+	if c.isConnected() { // another caller connected while this one waited
 		return nil
 	}
 	c.mu.Lock()

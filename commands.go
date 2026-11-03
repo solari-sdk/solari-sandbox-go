@@ -37,6 +37,10 @@ type exitResult struct {
 }
 
 // CommandHandle is a started command from Commands.Start.
+//
+// Output callbacks and the exit are delivered by a goroutine of the handle's own, in the order they arrived, never on the
+// control socket's read loop: a callback may therefore make calls of its own (Stdin, Kill, a file read) without stalling the
+// loop that has to deliver the reply.
 type CommandHandle struct {
 	CmdID string
 	ch    *channel
@@ -45,8 +49,60 @@ type CommandHandle struct {
 	dataCbs  []func(stream, data string)
 	buffered []dataChunk
 
-	exitCh   chan exitResult
+	evMu     sync.Mutex
+	evCond   *sync.Cond
+	events   []handleEvent
+	evClosed bool
+
+	done     chan struct{} // closed once the exit result is set
+	result   exitResult
 	exitOnce sync.Once
+}
+
+type handleEvent struct {
+	chunk *dataChunk
+	exit  *exitResult
+}
+
+func newCommandHandle(cmdID string, ch *channel) *CommandHandle {
+	h := &CommandHandle{CmdID: cmdID, ch: ch, done: make(chan struct{})}
+	h.evCond = sync.NewCond(&h.evMu)
+	go h.run()
+	return h
+}
+
+// push queues an event for the handle's goroutine; events after the exit are dropped.
+func (h *CommandHandle) push(ev handleEvent) {
+	h.evMu.Lock()
+	if !h.evClosed {
+		h.events = append(h.events, ev)
+		h.evCond.Signal()
+	}
+	h.evMu.Unlock()
+}
+
+// run delivers queued events in order and ends with the exit.
+func (h *CommandHandle) run() {
+	for {
+		h.evMu.Lock()
+		for len(h.events) == 0 {
+			h.evCond.Wait()
+		}
+		ev := h.events[0]
+		h.events = h.events[1:]
+		h.evMu.Unlock()
+		if ev.chunk != nil {
+			h.deliver(*ev.chunk)
+			continue
+		}
+		h.evMu.Lock()
+		h.evClosed = true
+		h.events = nil
+		h.evMu.Unlock()
+		h.result = *ev.exit
+		close(h.done)
+		return
+	}
 }
 
 // OnData subscribes to stdout/stderr chunks. Any output buffered before the
@@ -75,13 +131,14 @@ func (h *CommandHandle) OnData(cb func(stream, data string)) {
 }
 
 // Wait blocks until the command exits (or the channel drops / ctx is cancelled)
-// and returns the exit code.
+// and returns the exit code. It may be called more than once, and from several
+// goroutines: each gets the same result.
 func (h *CommandHandle) Wait(ctx context.Context) (int, error) {
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
-	case r := <-h.exitCh:
-		return r.code, r.err
+	case <-h.done:
+		return h.result.code, h.result.err
 	}
 }
 
@@ -104,6 +161,33 @@ func (h *CommandHandle) Kill(ctx context.Context, signal int) error {
 	return err
 }
 
+// cancelKillGrace is how long a cancelled command gets to exit after SIGTERM before it is SIGKILLed.
+const cancelKillGrace = 2 * time.Second
+
+// closeStdin closes the command's stdin (the guest writes nothing, then closes it).
+func (h *CommandHandle) closeStdin(ctx context.Context) error {
+	_, err := h.ch.call(ctx, "cmd.stdin", map[string]interface{}{"cmdId": h.CmdID, "base64": "", "eof": true}, callOptions{})
+	return err
+}
+
+// stopAfterCancel is what a cancelled Commands.Run does to the guest process: SIGTERM and close stdin now, SIGKILL after
+// cancelKillGrace if it has not exited. Every call is best effort (a command that already finished answers with an error),
+// and runs on its own goroutine (the caller starts it with `go`) so the cancelled caller returns at once.
+func (h *CommandHandle) stopAfterCancel() {
+	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = h.Kill(bg, 15)
+	_ = h.closeStdin(bg)
+	cancel()
+	select {
+	case <-h.done:
+		return
+	case <-time.After(cancelKillGrace):
+	}
+	kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer kcancel()
+	_ = h.Kill(kctx, 9)
+}
+
 func (h *CommandHandle) deliver(chunk dataChunk) {
 	h.mu.Lock()
 	if len(h.dataCbs) == 0 {
@@ -120,7 +204,7 @@ func (h *CommandHandle) deliver(chunk dataChunk) {
 
 func (h *CommandHandle) finishExit(code int, err error) {
 	h.exitOnce.Do(func() {
-		h.exitCh <- exitResult{code: code, err: err}
+		h.push(handleEvent{exit: &exitResult{code: code, err: err}})
 	})
 }
 
@@ -152,11 +236,7 @@ func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOpti
 	}
 	cmdID := res.CmdID
 
-	h := &CommandHandle{
-		CmdID:  cmdID,
-		ch:     s.ch,
-		exitCh: make(chan exitResult, 1),
-	}
+	h := newCommandHandle(cmdID, s.ch)
 
 	// The result accumulator is subscribed BEFORE the frame handlers are registered:
 	// registering them flushes frames that beat the cmd.start reply, and a non-empty
@@ -193,7 +273,7 @@ func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOpti
 				data = string(b)
 			}
 		}
-		h.deliver(dataChunk{stream: stream, data: data})
+		h.push(handleEvent{chunk: &dataChunk{stream: stream, data: data}})
 	})
 	s.ch.onFrame("cmd.exit", cmdID, func(f asyncFrame) {
 		s.ch.offFrame("cmd.data", cmdID)
@@ -262,6 +342,11 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 			code = -1
 			timedOut = true
 		} else {
+			if ctx.Err() != nil {
+				// Cancelled: the guest process would otherwise run on. Ask it to stop, close its stdin, and
+				// escalate to SIGKILL if it is still there after 2 s.
+				go handle.stopAfterCancel()
+			}
 			return nil, err
 		}
 	}

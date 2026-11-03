@@ -351,7 +351,7 @@ func TestActionErrorOnFailedReply(t *testing.T) {
 	if !errors.As(err, &ae) {
 		t.Fatalf("expected *ActionError, got %T: %v", err, err)
 	}
-	if ae.Method != "fs.read" || ae.Code != "EBAD" || ae.Message != "nope" {
+	if ae.Method != "fs.download" || ae.Code != "EBAD" || ae.Message != "nope" {
 		t.Fatalf("ActionError fields wrong: %+v", ae)
 	}
 }

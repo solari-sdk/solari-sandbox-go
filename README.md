@@ -131,7 +131,7 @@ sb, err := client.Connect(ctx, "sbx_…") // GET /sandboxes/:id, derives control
 | Namespace   | Methods |
 |-------------|---------|
 | `Commands`  | `Run`, `Start` (→ `CommandHandle` with `Stdin`/`OnData`/`Wait`/`Kill`) |
-| `Files`     | `Read`, `ReadText`, `Write`, `List`, `Stat`, `Mkdir`, `Remove`, `Rename` |
+| `Files`     | `Read`, `ReadText`, `Write` (up to 32 MiB), `Upload` / `Download` (chunked, any size), `List`, `Stat`, `Mkdir`, `Remove`, `Rename` |
 | `Code`      | `Run` (chart flattening), `CreateContext` |
 | `Git`       | `Clone`, `Status`, `Add`, `Commit`, `Push`, `Pull`, `Checkout`, `Branches`, `Log` |
 
