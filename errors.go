@@ -3,6 +3,7 @@ package solari
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // GatewayErrorBody is the JSON shape a gateway error response may carry.
@@ -190,4 +191,15 @@ func isRouteUnavailable(err error) bool {
 		return ge.Status == 405 || ge.Status == 501
 	}
 	return false
+}
+
+// isSharedRefusal reports whether err is the gateway refusing a command stream because the sandbox is on the shared
+// isolation tier (code NotAvailableOnSharedIsolation).
+func isSharedRefusal(err error) bool {
+	var ae *ActionError
+	if errors.As(err, &ae) && ae.Code == "NotAvailableOnSharedIsolation" {
+		return true
+	}
+	m := err.Error()
+	return strings.Contains(m, "NotAvailableOnSharedIsolation") || strings.Contains(m, "not available on a shared")
 }

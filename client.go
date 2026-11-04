@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -232,6 +233,7 @@ type Sandbox struct {
 	RecordingURL string
 
 	ch         *channel
+	shared     atomic.Bool // the gateway refused a command stream: this sandbox is on the shared tier
 	execHook   func(ctx context.Context, id string, req execOneShotRequest) (*CommandResult, error)
 	killHook   func(ctx context.Context, id string) error
 	pauseHook  func(ctx context.Context, id string) error
