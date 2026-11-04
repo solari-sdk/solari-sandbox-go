@@ -293,19 +293,24 @@ func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOpti
 // path (no cold WS handshake) for a plain run-to-completion, falling back to the
 // control-WS path when the fast path is unavailable or unsuitable.
 func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOptions) (*CommandResult, error) {
-	if s.execHook != nil &&
+	restEligible := s.execHook != nil &&
 		!opts.Background &&
 		opts.OnStdout == nil &&
 		opts.OnStderr == nil &&
 		opts.Env == nil &&
-		opts.User == "" &&
-		!s.ch.isConnected() {
-		res, err := s.execHook(ctx, s.ID, execOneShotRequest{
+		opts.User == ""
+	viaREST := func() (*CommandResult, error) {
+		return s.execHook(ctx, s.ID, execOneShotRequest{
 			Cmd:       cmd,
 			Args:      opts.Args,
 			Cwd:       opts.Cwd,
 			TimeoutMs: opts.TimeoutMs,
 		})
+	}
+	// A shared sandbox refuses command streams (cmd.start) but runs commands over REST, so once we know the sandbox is
+	// shared the REST route is the only one that works, whether or not the control channel is open.
+	if restEligible && (!s.ch.isConnected() || s.shared.Load()) {
+		res, err := viaREST()
 		if err == nil {
 			return res, nil
 		}
@@ -319,6 +324,15 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 	acc := &cmdAccumulator{}
 	handle, err := s.startCommand(ctx, cmd, opts, acc)
 	if err != nil {
+		if !isSharedRefusal(err) {
+			return nil, err
+		}
+		// The sandbox is shared: remember it, and run this command over REST if it can be (the refusal means nothing
+		// started, so nothing can run twice).
+		s.shared.Store(true)
+		if restEligible {
+			return viaREST()
+		}
 		return nil, err
 	}
 
