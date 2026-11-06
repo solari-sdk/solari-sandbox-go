@@ -135,6 +135,17 @@ sb, err := client.Connect(ctx, "sbx_…") // GET /sandboxes/:id, derives control
 | `Code`      | `Run` (chart flattening), `CreateContext` |
 | `Git`       | `Clone`, `Status`, `Add`, `Commit`, `Push`, `Pull`, `Checkout`, `Branches`, `Log` |
 
+## Conformance
+
+`tests/conformance` runs the same case tables as the other Solari SDKs (request bytes, headers, retries, error classes, response fields) against a scripted mock gateway, so the Go SDK stays consistent with them and with the gateway:
+
+```
+go test ./tests/conformance/        # needs Node 18+ for the mock gateway
+tests/conformance/mutants.sh        # breaks the client on purpose; every break must turn a case red
+```
+
+One live smoke test runs against staging only: `SOLARI_LIVE=1 SOLARI_API_KEY=… SOLARI_BASE_URL=https://api-sta.getsolari.com go test ./tests/conformance/ -run TestLiveSmoke -v`. It creates its own sandbox and deletes it afterwards.
+
 ## Build & test
 
 Offline — no live gateway required (transports are mocked in tests):
