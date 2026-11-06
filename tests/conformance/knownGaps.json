@@ -1,0 +1,10 @@
+[
+  {
+    "id": "errors/409-not-stopped",
+    "why": "Go has no typed not-stopped error; a 409 NotStopped surfaces as *GatewayError with Code, the TS SDK has SandboxNotStoppedError. Close by adding the class (or by deciding Code-matching is the Go contract and changing the neutral mapping)."
+  },
+  {
+    "id": "errors/409-start-in-progress",
+    "why": "same as errors/409-not-stopped (StartInProgress)"
+  }
+]

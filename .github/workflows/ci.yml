@@ -18,10 +18,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: conformance copy matches its pinned source
+        run: tests/conformance/check-source.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: go build
         run: go build ./...
       - name: go vet
         run: go vet ./...
       # The live suite (sandbox) is gated on SOLARI_LIVE, which is not set here.
+      # Includes tests/conformance: the shared SDK conformance rows through the mock gateway (needs node, set up above).
+      # The live smoke row in there is gated on SOLARI_LIVE and skipped here.
       - name: go test
         run: go test ./...

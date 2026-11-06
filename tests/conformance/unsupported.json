@@ -1,0 +1,90 @@
+[
+  {
+    "op": "sandbox.list",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no list; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "sandbox.listAll",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no list/listAll; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "snapshot.list",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no snapshot API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "snapshot.get",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no snapshot API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "snapshot.delete",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no snapshot API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "snapshot.promote",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no snapshot API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "sandbox.park",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no park; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "sandbox.unpark",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no unpark; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "sandbox.setTimeout",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no setTimeout; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "template.buildRaw",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no template API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "template.build",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no template API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "template.waitUntilReady",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no template API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "template.list",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no template API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "template.get",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no template API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "template.delete",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no template API; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "desktop.create",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no DesktopClient; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "desktop.get",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no DesktopClient; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "desktop.destroy",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no DesktopClient; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "desktop.pause",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no DesktopClient; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "desktop.resume",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no DesktopClient; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "desktop.connect",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no DesktopClient; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  },
+  {
+    "op": "desktop.attach",
+    "why": "the Go binding (solari-sandbox-go 0.3.x) has no DesktopClient; only Client.{Create,Get,Connect,Kill,Pause,Resume,Start} and the Sandbox handle exist"
+  }
+]
