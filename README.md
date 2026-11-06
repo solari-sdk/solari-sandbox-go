@@ -17,7 +17,7 @@ Requires Go 1.23+ and `github.com/gorilla/websocket`.
 
 - **Context-first.** Every network method takes `ctx context.Context` first.
 - **Errors as typed values.** `*AuthError`, `*PlanError`, `*ConcurrencyLimitError`,
-  `*NoCapacityError`, `*GatewayError`, `*ActionError`, `*ConnectionError`,
+  `*NoCapacityError`, `*SandboxNotStoppedError`, `*GatewayError`, `*ActionError`, `*ConnectionError`,
   `*TimeoutError`, all embedding the base `*SolariError`. Match with `errors.As`.
 - **Two transports.** REST to the gateway for session lifecycle + the one-shot
   `/exec` fast path; a control WebSocket (newline-delimited JSON RPC) for a live
@@ -134,6 +134,17 @@ sb, err := client.Connect(ctx, "sbx_…") // GET /sandboxes/:id, derives control
 | `Files`     | `Read`, `ReadText`, `Write` (up to 32 MiB), `Upload` / `Download` (chunked, any size), `List`, `Stat`, `Mkdir`, `Remove`, `Rename` |
 | `Code`      | `Run` (chart flattening), `CreateContext` |
 | `Git`       | `Clone`, `Status`, `Add`, `Commit`, `Push`, `Pull`, `Checkout`, `Branches`, `Log` |
+
+## Conformance
+
+`tests/conformance` runs the same case tables as the other Solari SDKs (request bytes, headers, retries, error classes, response fields) against a scripted mock gateway, so the Go SDK stays consistent with them and with the gateway:
+
+```
+go test ./tests/conformance/        # needs Node 18+ for the mock gateway
+tests/conformance/mutants.sh        # breaks the client on purpose; every break must turn a case red
+```
+
+One live smoke test runs against staging only: `SOLARI_LIVE=1 SOLARI_API_KEY=… SOLARI_BASE_URL=https://api-sta.getsolari.com go test ./tests/conformance/ -run TestLiveSmoke -v`. It creates its own sandbox and deletes it afterwards.
 
 ## Build & test
 

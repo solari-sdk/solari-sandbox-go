@@ -14,6 +14,8 @@ type GatewayErrorBody struct {
 	// Retryable is a gateway hint that the failure is transient. The HTTP
 	// transport retries idempotent requests when set.
 	Retryable bool `json:"retryable,omitempty"`
+	// State is the sandbox's current state, set on 409 NotStopped / StartInProgress.
+	State string `json:"state,omitempty"`
 }
 
 // SolariError is the base type for every error the SDK produces. The typed
@@ -66,6 +68,17 @@ func (e *ConcurrencyLimitError) Unwrap() error { return &e.GatewayError }
 type NoCapacityError struct{ GatewayError }
 
 func (e *NoCapacityError) Unwrap() error { return &e.GatewayError }
+
+// SandboxNotStoppedError maps HTTP 409 {code:"NotStopped"|"StartInProgress"} from Client.Start (the same
+// class the TypeScript and Python SDKs expose). NotStopped means the sandbox is in another state (State; use
+// Resume for a paused one); StartInProgress means a start is already under way, so poll Get until it is running.
+type SandboxNotStoppedError struct {
+	GatewayError
+	// State is the sandbox's current state from the response body ("" when the gateway did not send one).
+	State string
+}
+
+func (e *SandboxNotStoppedError) Unwrap() error { return &e.GatewayError }
 
 // ActionError is raised when a control-WS JSON-RPC call returns {ok:false}.
 type ActionError struct {
@@ -163,6 +176,15 @@ func mapGatewayError(status int, body *GatewayErrorBody) error {
 			return &ConcurrencyLimitError{build("Concurrency limit exceeded")}
 		}
 		return plain("Too many requests")
+	case 409:
+		if code == "NotStopped" || code == "StartInProgress" {
+			e := &SandboxNotStoppedError{GatewayError: build("Sandbox is not stopped")}
+			if body != nil {
+				e.State = body.State
+			}
+			return e
+		}
+		return plain("Conflict")
 	case 503:
 		if code == "" || code == "NoCapacity" || code == "StartTimeout" {
 			return &NoCapacityError{build("No host available")}
