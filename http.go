@@ -139,7 +139,11 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 				attempt++
 				continue
 			}
-			return newConnectionError(fmt.Sprintf("%s %s failed: %v", method, path, err))
+			ce := newConnectionError(fmt.Sprintf("%s %s failed: %v", method, path, err))
+			if cerr := ctx.Err(); cerr != nil {
+				ce.Cause = cerr // the caller's context ended it: errors.Is(err, context.Canceled)
+			}
+			return ce
 		}
 
 		if res.StatusCode < 200 || res.StatusCode >= 300 {

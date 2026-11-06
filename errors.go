@@ -111,13 +111,23 @@ func newTimeoutError(method string, timeoutMs int) *TimeoutError {
 
 // ConnectionError is raised when the control WebSocket is not open (never
 // connected, closed mid-flight, or the dial failed).
-type ConnectionError struct{ SolariError }
+type ConnectionError struct {
+	SolariError
+	// Cause is the underlying error when there is one worth matching: a cancelled or expired context is
+	// errors.Is(context.Canceled) / errors.Is(context.DeadlineExceeded) through it.
+	Cause error
+}
 
 func (e *ConnectionError) Error() string { return e.Message }
-func (e *ConnectionError) Unwrap() error { return &e.SolariError }
+func (e *ConnectionError) Unwrap() []error {
+	if e.Cause != nil {
+		return []error{&e.SolariError, e.Cause}
+	}
+	return []error{&e.SolariError}
+}
 
 func newConnectionError(msg string) *ConnectionError {
-	return &ConnectionError{SolariError{Message: msg}}
+	return &ConnectionError{SolariError: SolariError{Message: msg}}
 }
 
 // mapGatewayError maps an HTTP status + optional error body onto the typed

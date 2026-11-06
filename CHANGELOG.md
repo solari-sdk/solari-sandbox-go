@@ -4,7 +4,14 @@
 
 `Commands.Run` now behaves the same whether it goes over REST (`/exec`) or the control WebSocket (`cmd.start`). Measured on staging with the same command on both paths; the only difference left is the guest's own text for a bad `Cwd` on the WebSocket (it names the binary, not the directory).
 
+### Added
+- **`CommandHandle.CloseStdin`** closes a started command's stdin (an EOF to `cat`, a shell, or anything reading it). It was internal; cancel used it.
+- **`CommandResult.OOMKilled`** is true when the guest killed the command for exceeding the sandbox's memory limit (exit 137). Only the REST route reports it.
+- `ConnectionError.Cause`: a request ended by your context (cancelled or expired) is now `errors.Is(err, context.Canceled)` / `context.DeadlineExceeded` as well as a `*ConnectionError`. This includes cancelling a `Run` that went over REST.
+
 ### Changed
+- **A command that outlives its deadline over REST is a result, not an error**: exit -1, `TimedOut`, as over the control socket. The gateway answers 400 `ExecTimeout`, or 502 with an `i/o timeout` message when its read of the guest timed out first; both used to surface as `*GatewayError`.
+- The REST `/exec` body always carries `args` (an empty array when there are none), as the other SDKs send it.
 - **`Commands.Run` connects the control channel itself** when the run needs it (`Env`, `User`, output callbacks, `Background`). It used to return `ConnectionError "Not connected - call Connect() first"` unless you had called `Connect()`; a plain run over REST never needed it. `Commands.Start` still needs an open channel.
 - **A command that cannot start is one error on both paths**: `*ActionError{Method: "cmd.start", Code: "ExecFailed"}` with the real cause in the message (`fork/exec ...`, `chdir ...`). REST used to return a `*GatewayError` (status 400, code `ExecFailed`) and the WebSocket an `*ActionError` with no code. Code that matched the old `*GatewayError` for this case should match `*ActionError` and `Code == "ExecFailed"`.
 - **`CommandResult.Stdout` / `Stderr` are decoded over the whole stream**: a character split across output chunks survives, and each invalid byte becomes U+FFFD, as the REST route already returned. Over the WebSocket they used to hold the raw invalid bytes. The `OnStdout` / `OnStderr` callbacks still get each chunk as it arrives.

@@ -166,8 +166,9 @@ func (h *CommandHandle) Kill(ctx context.Context, signal int) error {
 // cancelKillGrace is how long a cancelled command gets to exit after SIGTERM before it is SIGKILLed.
 const cancelKillGrace = 2 * time.Second
 
-// closeStdin closes the command's stdin (the guest writes nothing, then closes it).
-func (h *CommandHandle) closeStdin(ctx context.Context) error {
+// CloseStdin closes the command's stdin (an EOF to a program reading it, such as cat or a shell). Write what the command
+// should read with Stdin first.
+func (h *CommandHandle) CloseStdin(ctx context.Context) error {
 	_, err := h.ch.call(ctx, "cmd.stdin", map[string]interface{}{"cmdId": h.CmdID, "base64": "", "eof": true}, callOptions{})
 	return err
 }
@@ -178,7 +179,7 @@ func (h *CommandHandle) closeStdin(ctx context.Context) error {
 func (h *CommandHandle) stopAfterCancel() {
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = h.Kill(bg, 15)
-	_ = h.closeStdin(bg)
+	_ = h.CloseStdin(bg)
 	cancel()
 	select {
 	case <-h.done:

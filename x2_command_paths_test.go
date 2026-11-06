@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -93,5 +96,94 @@ func TestRunTextIsDecodedOverTheWholeStream(t *testing.T) {
 	}
 	if !strings.Contains(r.Stdout, "漢") {
 		t.Fatal("multibyte character split across chunks was lost")
+	}
+}
+
+// Cancelling a fast-path (REST) run returns an error that is errors.Is(context.Canceled) (and still a *ConnectionError).
+func TestRunCancelledOverRESTIsContextCanceled(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	c, err := NewClient(ClientOptions{APIKey: "slr_test_x", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := newTestSandbox("ws://127.0.0.1:1")
+	sb.execHook = c.exec
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-started; cancel() }()
+	_, runErr := sb.Commands.Run(ctx, "sleep", CommandOptions{Args: []string{"30"}})
+	if !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("want errors.Is(err, context.Canceled), got %T %v", runErr, runErr)
+	}
+	var ce *ConnectionError
+	if !errors.As(runErr, &ce) {
+		t.Errorf("a cancelled request is still a *ConnectionError, got %T", runErr)
+	}
+}
+
+// The exec body always carries "args" (an empty array when there are none), as the other SDKs send it.
+func TestExecBodyAlwaysCarriesArgs(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"exitCode":0,"stdout":"","stderr":""}`))
+	}))
+	defer srv.Close()
+	c, _ := NewClient(ClientOptions{APIKey: "slr_test_x", BaseURL: srv.URL})
+	if _, err := c.exec(context.Background(), "sbx1", execOneShotRequest{Cmd: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, `"args":[]`) {
+		t.Fatalf("exec body %s has no empty args array", body)
+	}
+}
+
+// CommandHandle.CloseStdin is public: it sends cmd.stdin with eof and an empty payload.
+func TestCommandHandleCloseStdinIsPublic(t *testing.T) {
+	got := make(chan string, 4)
+	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
+		for {
+			line, err := readOneFrame(conn)
+			if err != nil {
+				return
+			}
+			got <- line
+			switch {
+			case strings.Contains(line, `"cmd.start"`):
+				_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","ok":true,"result":{"cmdId":"c1"}}`+"\n"))
+			default:
+				_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"2","ok":true,"result":{}}`+"\n"))
+			}
+		}
+	})
+	defer closeSrv()
+	sb := newTestSandbox(wsURL)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer sb.Close()
+	h, err := sb.Commands.Start(ctx, "cat", CommandOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-got // cmd.start
+	if err := h.CloseStdin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	line := <-got
+	if !strings.Contains(line, `"cmd.stdin"`) || !strings.Contains(line, `"eof":true`) {
+		t.Fatalf("CloseStdin sent %s", line)
 	}
 }
