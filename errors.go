@@ -40,6 +40,18 @@ type GatewayError struct {
 func (e *GatewayError) Error() string { return e.Message }
 func (e *GatewayError) Unwrap() error { return &e.SolariError }
 
+// ValidationError maps HTTP 400: the request was refused as invalid (a bad field, a limit exceeded); Code and the message say
+// which. The SDK also returns it, before sending anything, for a Commands.Run option the gateway would refuse (a negative
+// TimeoutMs, a User that is not a unix user name).
+type ValidationError struct{ GatewayError }
+
+func (e *ValidationError) Unwrap() error { return &e.GatewayError }
+
+func newValidationError(msg string) *ValidationError {
+	body := &GatewayErrorBody{Code: "ValidationError", Error: msg}
+	return &ValidationError{GatewayError{SolariError: SolariError{Message: msg}, Status: 400, Code: "ValidationError", Body: body}}
+}
+
 // AuthError maps HTTP 401 — the API key was missing, malformed, or rejected.
 type AuthError struct{ GatewayError }
 
@@ -111,13 +123,23 @@ func newTimeoutError(method string, timeoutMs int) *TimeoutError {
 
 // ConnectionError is raised when the control WebSocket is not open (never
 // connected, closed mid-flight, or the dial failed).
-type ConnectionError struct{ SolariError }
+type ConnectionError struct {
+	SolariError
+	// Cause is the underlying error when there is one worth matching: a cancelled or expired context is
+	// errors.Is(context.Canceled) / errors.Is(context.DeadlineExceeded) through it.
+	Cause error
+}
 
 func (e *ConnectionError) Error() string { return e.Message }
-func (e *ConnectionError) Unwrap() error { return &e.SolariError }
+func (e *ConnectionError) Unwrap() []error {
+	if e.Cause != nil {
+		return []error{&e.SolariError, e.Cause}
+	}
+	return []error{&e.SolariError}
+}
 
 func newConnectionError(msg string) *ConnectionError {
-	return &ConnectionError{SolariError{Message: msg}}
+	return &ConnectionError{SolariError: SolariError{Message: msg}}
 }
 
 // mapGatewayError maps an HTTP status + optional error body onto the typed
@@ -161,6 +183,8 @@ func mapGatewayError(status int, body *GatewayErrorBody) error {
 		return &g
 	}
 	switch status {
+	case 400:
+		return &ValidationError{build("Invalid request")}
 	case 401:
 		return &AuthError{build("Invalid or missing API key")}
 	case 402:

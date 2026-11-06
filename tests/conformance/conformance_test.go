@@ -37,7 +37,9 @@ type row struct {
 		Result   map[string]any `json:"result"`
 		Error    map[string]any `json:"error"`
 		Requests *int           `json:"requests"`
+		WsCalls  *int           `json:"wsCalls"`
 	} `json:"expect"`
+	WS json.RawMessage `json:"ws"`
 }
 
 type listed struct {
@@ -139,7 +141,8 @@ type mockLog struct {
 		Request string `json:"request"`
 		Reason  string `json:"reason"`
 	} `json:"mismatches"`
-	Remaining int `json:"remaining"`
+	Remaining int               `json:"remaining"`
+	WsCalls   []json.RawMessage `json:"wsCalls"`
 }
 
 func (m *mockProc) log(t *testing.T) mockLog {
@@ -174,6 +177,11 @@ type createInput struct {
 	Record       *bool                     `json:"record"`
 	Volumes      []solari.VolumeAttachment `json:"volumes"`
 	ID           string                    `json:"id"`
+	// commands.run rows
+	Via  string   `json:"via"`
+	User string   `json:"user"`
+	Cmd  string   `json:"cmd"`
+	Args []string `json:"args"`
 }
 
 func (c createInput) options(kind solari.SandboxKind) solari.CreateOptions {
@@ -251,6 +259,39 @@ var ops = map[string]adapterFn{
 		defer s.Close()
 		return sandboxView(s), nil
 	},
+	// via "ws": a per-command env makes the SDK use the live control connection; via "rest" nothing does (no open channel).
+	"commands.run": func(ctx context.Context, c *solari.Client, in createInput) (map[string]any, error) {
+		s, err := c.Create(ctx, solari.CreateOptions{Template: "base"})
+		if err != nil {
+			return nil, err
+		}
+		defer s.Close()
+		o := solari.CommandOptions{Args: in.Args, TimeoutMs: in.TimeoutMs, User: in.User}
+		if in.Via == "ws" {
+			o.Env = map[string]string{"X2": "1"}
+		}
+		// A cancellable ctx would (by design) take the live connection; the REST rows run with one that cannot be cancelled.
+		r, err := s.Commands.Run(context.WithoutCancel(ctx), in.Cmd, o)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"exitCode": float64(r.ExitCode), "stdout": r.Stdout, "stderr": r.Stderr, "timedOut": r.TimedOut, "oomKilled": r.OOMKilled}, nil
+	},
+	// A call with a cancellable context: it must use the live connection (cancel sends cmd.kill there).
+	"commands.runCancellable": func(ctx context.Context, c *solari.Client, in createInput) (map[string]any, error) {
+		s, err := c.Create(ctx, solari.CreateOptions{Template: "base"})
+		if err != nil {
+			return nil, err
+		}
+		defer s.Close()
+		cctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		r, err := s.Commands.Run(cctx, in.Cmd, solari.CommandOptions{Args: in.Args, TimeoutMs: in.TimeoutMs})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"exitCode": float64(r.ExitCode), "stdout": r.Stdout, "stderr": r.Stderr, "timedOut": r.TimedOut, "oomKilled": r.OOMKilled}, nil
+	},
 	"sandbox.pause":  viaHandle(func(ctx context.Context, s *solari.Sandbox) error { return s.Pause(ctx) }),
 	"sandbox.resume": viaHandle(func(ctx context.Context, s *solari.Sandbox) error { return s.Resume(ctx) }),
 	"sandbox.start":  viaHandle(func(ctx context.Context, s *solari.Sandbox) error { return s.Start(ctx) }),
@@ -266,6 +307,8 @@ func normalizeError(err error) map[string]any {
 		stop *solari.SandboxNotStoppedError
 		conc *solari.ConcurrencyLimitError
 		capa *solari.NoCapacityError
+		act  *solari.ActionError
+		val  *solari.ValidationError
 		gw   *solari.GatewayError
 	)
 	set := func(g *solari.GatewayError, typ string) {
@@ -275,6 +318,10 @@ func normalizeError(err error) map[string]any {
 		}
 	}
 	switch {
+	case g(err, &val):
+		set(&val.GatewayError, "validation")
+	case g(err, &act):
+		e["type"], e["code"] = "action", act.Code
 	case g(err, &stop):
 		set(&stop.GatewayError, "not_stopped")
 	case g(err, &auth):
@@ -335,7 +382,18 @@ func check(t *testing.T, r row) string {
 		}
 		return m.URL
 	})
-	m.post(t, "/__arm", []byte(`{"mock":`+mock+`}`))
+	ws := string(r.WS)
+	if ws == "" || ws == "null" {
+		ws = "[]"
+	}
+	ws = placeholder.ReplaceAllStringFunc(ws, func(s string) string {
+		if s == "$MOCK_WS" {
+			return strings.Replace(m.URL, "http", "ws", 1)
+		}
+		return m.URL
+	})
+	// strict: a row that counts control calls must see none it did not script (how "no control call was made" is proven).
+	m.post(t, "/__arm", []byte(fmt.Sprintf(`{"mock":%s,"ws":%s,"strict":%v}`, mock, ws, r.Expect.WsCalls != nil)))
 
 	var in createInput
 	if len(r.Input) > 0 {
@@ -385,6 +443,9 @@ func check(t *testing.T, r row) string {
 	}
 	if r.Expect.Requests != nil && requests != *r.Expect.Requests {
 		return fmt.Sprintf("expected %d request(s), made %d", *r.Expect.Requests, requests)
+	}
+	if r.Expect.WsCalls != nil && len(l.WsCalls) != *r.Expect.WsCalls {
+		return fmt.Sprintf("expected %d control call(s), made %d", *r.Expect.WsCalls, len(l.WsCalls))
 	}
 	if l.Remaining != 0 {
 		return fmt.Sprintf("%d scripted exchange(s) never happened", l.Remaining)

@@ -8,6 +8,7 @@ package solari
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -213,8 +214,17 @@ func (c *Client) Start(ctx context.Context, sandboxID string) (string, error) {
 // exec is the one-shot command fast path (POST /sandboxes/:id/exec).
 func (c *Client) exec(ctx context.Context, id string, req execOneShotRequest) (*CommandResult, error) {
 	var res CommandResult
+	if req.Args == nil {
+		req.Args = []string{} // always sent, as the other SDKs do
+	}
 	err := c.http.request(ctx, http.MethodPost, "/sandboxes/"+encodeURIComponent(id)+"/exec", req, httpRequestOptions{}, &res)
 	if err != nil {
+		// A command that outlived its deadline is a RESULT, as it is over the control socket: exit -1, timedOut. The gateway
+		// reports it as 400 ExecTimeout, or, when the guest's read of the output timed out first, as a 502 "... i/o timeout".
+		var ge *GatewayError
+		if errors.As(err, &ge) && ((ge.Status == 400 && ge.Code == "ExecTimeout") || (ge.Status == 502 && strings.Contains(ge.Message, "i/o timeout"))) {
+			return &CommandResult{ExitCode: -1, TimedOut: true}, nil
+		}
 		return nil, err
 	}
 	return &res, nil

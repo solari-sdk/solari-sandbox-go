@@ -187,12 +187,15 @@ type CommandResult struct {
 	Stderr   string `json:"stderr"`
 	// TimedOut is true when the command hit its TimeoutMs and was killed; ExitCode is -1 then.
 	TimedOut bool `json:"timedOut,omitempty"`
+	// OOMKilled is true when the guest killed the command for exceeding the sandbox's memory limit (ExitCode 137). Only the
+	// REST route reports it; a command run over the control socket always has false.
+	OOMKilled bool `json:"oomKilled"`
 }
 
 // execOneShotRequest is the body for the POST /sandboxes/{id}/exec fast path.
 type execOneShotRequest struct {
 	Cmd       string   `json:"cmd"`
-	Args      []string `json:"args,omitempty"`
+	Args      []string `json:"args"`
 	Cwd       string   `json:"cwd,omitempty"`
 	TimeoutMs int      `json:"timeoutMs,omitempty"`
 }
