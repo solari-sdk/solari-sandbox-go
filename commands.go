@@ -311,14 +311,16 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 	}
 	// REST only for a plain run-to-completion, a deadline the route can express, and a call that cannot be cancelled: aborting
 	// POST /exec does NOT stop the process in the guest, whereas cancelling a run on the live connection sends cmd.kill.
-	restEligible := s.execHook != nil &&
+	// A shared sandbox is the exception: it refuses command streams, so REST is its only route and a cancellable call uses it too
+	// (cancelling then abandons the request; the guest process is not stopped, which is the best that route can do).
+	restPlain := s.execHook != nil &&
 		!opts.Background &&
 		opts.OnStdout == nil &&
 		opts.OnStderr == nil &&
 		opts.Env == nil &&
 		opts.User == "" &&
-		ctx.Done() == nil &&
 		timeoutMs >= minRESTTimeoutMs && timeoutMs <= defaultCommandTimeoutMs
+	restEligible := restPlain && (ctx.Done() == nil || s.shared.Load())
 	viaREST := func() (*CommandResult, error) {
 		res, err := s.execHook(ctx, s.ID, execOneShotRequest{
 			Cmd:       cmd,
@@ -361,7 +363,7 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 		// The sandbox is shared: remember it, and run this command over REST if it can be (the refusal means nothing
 		// started, so nothing can run twice).
 		s.shared.Store(true)
-		if restEligible {
+		if restPlain {
 			return viaREST()
 		}
 		return nil, err

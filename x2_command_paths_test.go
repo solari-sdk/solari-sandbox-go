@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gorilla/websocket"
@@ -183,5 +184,33 @@ func TestCommandHandleCloseStdinIsPublic(t *testing.T) {
 	line := <-got
 	if !strings.Contains(line, `"cmd.stdin"`) || !strings.Contains(line, `"eof":true`) {
 		t.Fatalf("CloseStdin sent %s", line)
+	}
+}
+
+// A shared sandbox refuses command streams, so REST is its only route: a Run with a cancellable context (the usual kind) must
+// still work there, though it prefers the connection everywhere else.
+func TestRunWithACancellableContextOnASharedSandboxUsesREST(t *testing.T) {
+	var starts, rest atomic.Int32
+	wsURL, closeSrv := sharedRefusingServer(t, &starts)
+	defer closeSrv()
+	sb := newTestSandbox(wsURL)
+	sb.execHook = func(_ context.Context, _ string, req execOneShotRequest) (*CommandResult, error) {
+		rest.Add(1)
+		return &CommandResult{ExitCode: 0, Stdout: "via rest"}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer sb.Close()
+	for i := 0; i < 3; i++ {
+		r, err := sb.Commands.Run(ctx, "echo", CommandOptions{Args: []string{"hi"}})
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if r.Stdout != "via rest" {
+			t.Fatalf("run %d: %+v", i, r)
+		}
+	}
+	if rest.Load() != 3 || starts.Load() != 1 {
+		t.Fatalf("REST used %d times (want 3), cmd.start sent %d times (want 1: the refusal is remembered)", rest.Load(), starts.Load())
 	}
 }
