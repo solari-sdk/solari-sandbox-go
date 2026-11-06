@@ -314,7 +314,7 @@ func TestExecTimedOutAndRecordingURL(t *testing.T) {
 	if sb.RecordingURL != "https://rec.example/r/1" {
 		t.Errorf("RecordingURL = %q", sb.RecordingURL)
 	}
-	res, err := sb.Commands.Run(context.Background(), "sleep", CommandOptions{Args: []string{"30"}, TimeoutMs: 100})
+	res, err := sb.Commands.Run(context.Background(), "sleep", CommandOptions{Args: []string{"30"}, TimeoutMs: 2000})
 	if err != nil {
 		t.Fatal(err)
 	}

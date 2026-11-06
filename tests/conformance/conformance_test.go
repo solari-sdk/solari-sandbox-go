@@ -179,6 +179,7 @@ type createInput struct {
 	ID           string                    `json:"id"`
 	// commands.run rows
 	Via  string   `json:"via"`
+	User string   `json:"user"`
 	Cmd  string   `json:"cmd"`
 	Args []string `json:"args"`
 }
@@ -265,11 +266,27 @@ var ops = map[string]adapterFn{
 			return nil, err
 		}
 		defer s.Close()
-		o := solari.CommandOptions{Args: in.Args, TimeoutMs: in.TimeoutMs}
+		o := solari.CommandOptions{Args: in.Args, TimeoutMs: in.TimeoutMs, User: in.User}
 		if in.Via == "ws" {
 			o.Env = map[string]string{"X2": "1"}
 		}
-		r, err := s.Commands.Run(ctx, in.Cmd, o)
+		// A cancellable ctx would (by design) take the live connection; the REST rows run with one that cannot be cancelled.
+		r, err := s.Commands.Run(context.WithoutCancel(ctx), in.Cmd, o)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"exitCode": float64(r.ExitCode), "stdout": r.Stdout, "stderr": r.Stderr, "timedOut": r.TimedOut, "oomKilled": r.OOMKilled}, nil
+	},
+	// A call with a cancellable context: it must use the live connection (cancel sends cmd.kill there).
+	"commands.runCancellable": func(ctx context.Context, c *solari.Client, in createInput) (map[string]any, error) {
+		s, err := c.Create(ctx, solari.CreateOptions{Template: "base"})
+		if err != nil {
+			return nil, err
+		}
+		defer s.Close()
+		cctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		r, err := s.Commands.Run(cctx, in.Cmd, solari.CommandOptions{Args: in.Args, TimeoutMs: in.TimeoutMs})
 		if err != nil {
 			return nil, err
 		}
@@ -291,6 +308,7 @@ func normalizeError(err error) map[string]any {
 		conc *solari.ConcurrencyLimitError
 		capa *solari.NoCapacityError
 		act  *solari.ActionError
+		val  *solari.ValidationError
 		gw   *solari.GatewayError
 	)
 	set := func(g *solari.GatewayError, typ string) {
@@ -300,6 +318,8 @@ func normalizeError(err error) map[string]any {
 		}
 	}
 	switch {
+	case g(err, &val):
+		set(&val.GatewayError, "validation")
 	case g(err, &act):
 		e["type"], e["code"] = "action", act.Code
 	case g(err, &stop):

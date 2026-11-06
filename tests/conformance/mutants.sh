@@ -22,4 +22,8 @@ run "exec 502 i/o timeout is an error"    client.go 's#ge.Status == 502 \&\& str
 run "exec drops the empty args array"     client.go 's#req.Args = \[\]string{} // always sent.*#req.Args = nil#' || bad=1
 run "oomKilled is not read"               types.go  's#`json:"oomKilled"`#`json:"oom_killed"`#' || bad=1
 run "cancel is not errors.Is(Canceled)"   http.go   's#ce.Cause = cerr.*#_ = cerr#' || bad=1
+run "negative timeout is not rejected"    commands.go 's#if timeoutMs < 0 {#if false {#' || bad=1
+run "bad user is not rejected"            commands.go 's#!validUser(opts.User)#false#' || bad=1
+run "HostCapabilityMissing is not retried" commands.go 's#!isRouteUnavailable(err) \&\& !isHostCapabilityMissing(err)#!isRouteUnavailable(err)#' || bad=1
+run "cancellable call still uses REST"    commands.go 's#ctx.Done() == nil \&\&#true \&\&#' || bad=1
 exit $bad

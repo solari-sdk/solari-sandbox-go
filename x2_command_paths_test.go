@@ -99,7 +99,7 @@ func TestRunTextIsDecodedOverTheWholeStream(t *testing.T) {
 	}
 }
 
-// Cancelling a fast-path (REST) run returns an error that is errors.Is(context.Canceled) (and still a *ConnectionError).
+// Cancelling a REST /exec request returns an error that is errors.Is(context.Canceled) (and still a *ConnectionError).
 func TestRunCancelledOverRESTIsContextCanceled(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -116,11 +116,9 @@ func TestRunCancelledOverRESTIsContextCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb := newTestSandbox("ws://127.0.0.1:1")
-	sb.execHook = c.exec
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-started; cancel() }()
-	_, runErr := sb.Commands.Run(ctx, "sleep", CommandOptions{Args: []string{"30"}})
+	_, runErr := c.exec(ctx, "sbx1", execOneShotRequest{Cmd: "sleep", Args: []string{"30"}})
 	if !errors.Is(runErr, context.Canceled) {
 		t.Fatalf("want errors.Is(err, context.Canceled), got %T %v", runErr, runErr)
 	}

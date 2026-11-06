@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -296,18 +297,34 @@ func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOpti
 // path (no cold WS handshake) for a plain run-to-completion, falling back to the
 // control-WS path when the fast path is unavailable or unsuitable.
 func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOptions) (*CommandResult, error) {
+	// The deadline is the same on both paths: TimeoutMs, else the tier maximum the gateway accepts. Validated BEFORE a transport
+	// is chosen, with the gateway's own wording and class, so a bad value fails the same way whichever path it would take.
+	timeoutMs := opts.TimeoutMs
+	if timeoutMs < 0 {
+		return nil, newValidationError("timeoutMs must be at least 1000 (one second), or 0 for no deadline")
+	}
+	if timeoutMs == 0 {
+		timeoutMs = defaultCommandTimeoutMs
+	}
+	if opts.User != "" && !validUser(opts.User) {
+		return nil, newValidationError("user: must be a unix user name or root")
+	}
+	// REST only for a plain run-to-completion, a deadline the route can express, and a call that cannot be cancelled: aborting
+	// POST /exec does NOT stop the process in the guest, whereas cancelling a run on the live connection sends cmd.kill.
 	restEligible := s.execHook != nil &&
 		!opts.Background &&
 		opts.OnStdout == nil &&
 		opts.OnStderr == nil &&
 		opts.Env == nil &&
-		opts.User == ""
+		opts.User == "" &&
+		ctx.Done() == nil &&
+		timeoutMs >= minRESTTimeoutMs && timeoutMs <= defaultCommandTimeoutMs
 	viaREST := func() (*CommandResult, error) {
 		res, err := s.execHook(ctx, s.ID, execOneShotRequest{
 			Cmd:       cmd,
 			Args:      opts.Args,
 			Cwd:       opts.Cwd,
-			TimeoutMs: opts.TimeoutMs,
+			TimeoutMs: timeoutMs,
 		})
 		return res, execFailed(err)
 	}
@@ -320,7 +337,9 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 		}
 		// Fall back to the WS path ONLY when /exec isn't served (older gateway).
 		// Any other failure propagates so we never silently double-execute.
-		if !isRouteUnavailable(err) {
+		// Also the one refusal that proves nothing ran: a host pool without exec.user answers 409 HostCapabilityMissing; the live
+		// connection reaches the guest directly. Retried once, there.
+		if !isRouteUnavailable(err) && !isHostCapabilityMissing(err) {
 			return nil, err
 		}
 	}
@@ -356,14 +375,14 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 	// command is killed and the result is exit -1 with the output so far (the guest's own
 	// timeout result). Without this a hung command waited here until ctx was cancelled.
 	waitCtx, cancel := ctx, context.CancelFunc(func() {})
-	if opts.TimeoutMs > 0 {
-		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutMs)*time.Millisecond)
+	if timeoutMs > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 	}
 	code, err := handle.Wait(waitCtx)
 	cancel()
 	timedOut := false
 	if err != nil {
-		if opts.TimeoutMs > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		if timeoutMs > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			_ = handle.Kill(ctx, 9)
 			code = -1
 			timedOut = true
@@ -379,6 +398,21 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 	res := acc.result(code)
 	res.TimedOut = timedOut
 	return res, nil
+}
+
+// defaultCommandTimeoutMs is the deadline of a run that sets none: the maximum the gateway accepts.
+const defaultCommandTimeoutMs = 600000
+
+// minRESTTimeoutMs is the smallest deadline the one-shot route can express.
+const minRESTTimeoutMs = 1000
+
+var unixUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+func validUser(u string) bool { return u == "root" || unixUser.MatchString(u) }
+
+func isHostCapabilityMissing(err error) bool {
+	var ge *GatewayError
+	return errors.As(err, &ge) && ge.Status == 409 && ge.Code == "HostCapabilityMissing"
 }
 
 // cmdAccumulator collects a command's stdout/stderr for the CommandResult.

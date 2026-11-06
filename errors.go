@@ -40,6 +40,18 @@ type GatewayError struct {
 func (e *GatewayError) Error() string { return e.Message }
 func (e *GatewayError) Unwrap() error { return &e.SolariError }
 
+// ValidationError maps HTTP 400: the request was refused as invalid (a bad field, a limit exceeded); Code and the message say
+// which. The SDK also returns it, before sending anything, for a Commands.Run option the gateway would refuse (a negative
+// TimeoutMs, a User that is not a unix user name).
+type ValidationError struct{ GatewayError }
+
+func (e *ValidationError) Unwrap() error { return &e.GatewayError }
+
+func newValidationError(msg string) *ValidationError {
+	body := &GatewayErrorBody{Code: "ValidationError", Error: msg}
+	return &ValidationError{GatewayError{SolariError: SolariError{Message: msg}, Status: 400, Code: "ValidationError", Body: body}}
+}
+
 // AuthError maps HTTP 401 — the API key was missing, malformed, or rejected.
 type AuthError struct{ GatewayError }
 
@@ -171,6 +183,8 @@ func mapGatewayError(status int, body *GatewayErrorBody) error {
 		return &g
 	}
 	switch status {
+	case 400:
+		return &ValidationError{build("Invalid request")}
 	case 401:
 		return &AuthError{build("Invalid or missing API key")}
 	case 402:
