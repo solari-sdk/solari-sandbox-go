@@ -25,5 +25,5 @@ run "cancel is not errors.Is(Canceled)"   http.go   's#ce.Cause = cerr.*#_ = cer
 run "negative timeout is not rejected"    commands.go 's#if timeoutMs < 0 {#if false {#' || bad=1
 run "bad user is not rejected"            commands.go 's#!validUser(opts.User)#false#' || bad=1
 run "HostCapabilityMissing is not retried" commands.go 's#!isRouteUnavailable(err) \&\& !isHostCapabilityMissing(err)#!isRouteUnavailable(err)#' || bad=1
-run "cancellable call still uses REST"    commands.go 's#ctx.Done() == nil \&\&#true \&\&#' || bad=1
+run "cancellable call still uses REST"    commands.go 's#restPlain \&\& (ctx.Done() == nil || s.shared.Load())#restPlain#' || bad=1
 exit $bad
