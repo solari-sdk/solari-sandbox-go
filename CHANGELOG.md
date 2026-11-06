@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+`Commands.Run` now behaves the same whether it goes over REST (`/exec`) or the control WebSocket (`cmd.start`). Measured on staging with the same command on both paths; the only difference left is the guest's own text for a bad `Cwd` on the WebSocket (it names the binary, not the directory).
+
+### Changed
+- **`Commands.Run` connects the control channel itself** when the run needs it (`Env`, `User`, output callbacks, `Background`). It used to return `ConnectionError "Not connected - call Connect() first"` unless you had called `Connect()`; a plain run over REST never needed it. `Commands.Start` still needs an open channel.
+- **A command that cannot start is one error on both paths**: `*ActionError{Method: "cmd.start", Code: "ExecFailed"}` with the real cause in the message (`fork/exec ...`, `chdir ...`). REST used to return a `*GatewayError` (status 400, code `ExecFailed`) and the WebSocket an `*ActionError` with no code. Code that matched the old `*GatewayError` for this case should match `*ActionError` and `Code == "ExecFailed"`.
+- **`CommandResult.Stdout` / `Stderr` are decoded over the whole stream**: a character split across output chunks survives, and each invalid byte becomes U+FFFD, as the REST route already returned. Over the WebSocket they used to hold the raw invalid bytes. The `OnStdout` / `OnStderr` callbacks still get each chunk as it arrives.
+
 ## 0.4.0
 
 ### Added

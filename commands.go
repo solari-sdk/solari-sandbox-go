@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Commands is the process-execution namespace on a Sandbox.
@@ -226,7 +228,7 @@ func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOpti
 
 	raw, err := s.ch.call(ctx, "cmd.start", params, callOptions{})
 	if err != nil {
-		return nil, err
+		return nil, execFailed(err)
 	}
 	var res struct {
 		CmdID string `json:"cmdId"`
@@ -300,12 +302,13 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 		opts.Env == nil &&
 		opts.User == ""
 	viaREST := func() (*CommandResult, error) {
-		return s.execHook(ctx, s.ID, execOneShotRequest{
+		res, err := s.execHook(ctx, s.ID, execOneShotRequest{
 			Cmd:       cmd,
 			Args:      opts.Args,
 			Cwd:       opts.Cwd,
 			TimeoutMs: opts.TimeoutMs,
 		})
+		return res, execFailed(err)
 	}
 	// A shared sandbox refuses command streams (cmd.start) but runs commands over REST, so once we know the sandbox is
 	// shared the REST route is the only one that works, whether or not the control channel is open.
@@ -317,6 +320,14 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 		// Fall back to the WS path ONLY when /exec isn't served (older gateway).
 		// Any other failure propagates so we never silently double-execute.
 		if !isRouteUnavailable(err) {
+			return nil, err
+		}
+	}
+
+	// The socket is what this run needs: connect it, as the REST route needs no Connect() either (Commands.Start still
+	// requires an open channel).
+	if !s.ch.isConnected() {
+		if err := s.ch.connect(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -388,5 +399,44 @@ func (a *cmdAccumulator) add(stream, data string) {
 func (a *cmdAccumulator) result(code int) *CommandResult {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return &CommandResult{ExitCode: code, Stdout: string(a.stdout), Stderr: string(a.stderr)}
+	return &CommandResult{ExitCode: code, Stdout: validUTF8(a.stdout), Stderr: validUTF8(a.stderr)}
+}
+
+// validUTF8 decodes the whole stream at once, so a character split across chunks survives, and replaces each invalid byte
+// with U+FFFD, which is what the REST route returns for the same output.
+func validUTF8(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	var sb strings.Builder
+	for len(b) > 0 {
+		r, n := utf8.DecodeRune(b)
+		if r == utf8.RuneError && n == 1 {
+			sb.WriteRune(utf8.RuneError)
+		} else {
+			sb.Write(b[:n])
+		}
+		b = b[n:]
+	}
+	return sb.String()
+}
+
+// execFailed gives "the command could not be started" one shape on both transports: *ActionError{Method: "cmd.start",
+// Code: "ExecFailed"}. REST answers 400 {code: ExecFailed}; the control socket answers cmd.start with a bare message
+// ("fork/exec ...", "chdir ...") and no code. Any other error is returned unchanged.
+func execFailed(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ae *ActionError
+	if errors.As(err, &ae) && ae.Method == "cmd.start" && ae.Code == "" &&
+		(strings.HasPrefix(ae.Message, "fork/exec ") || strings.HasPrefix(ae.Message, "chdir ")) {
+		ae.Code = "ExecFailed"
+		return ae
+	}
+	var ge *GatewayError
+	if errors.As(err, &ge) && ge.Status == 400 && ge.Code == "ExecFailed" {
+		return &ActionError{SolariError: SolariError{Message: ge.Message}, Method: "cmd.start", Code: "ExecFailed"}
+	}
+	return err
 }
