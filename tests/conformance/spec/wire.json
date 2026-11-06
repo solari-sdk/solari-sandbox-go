@@ -219,7 +219,12 @@
               "sandboxId": "pool-a:vm-7:org-42.sig",
               "kind": "sandbox",
               "state": "running",
-              "expiresAt": "2030-01-01T00:00:00Z"
+              "expiresAt": "2030-01-01T00:00:00Z",
+              "metadata": {},
+              "template": "base",
+              "createdAt": "2030-01-01T00:00:00Z",
+              "cpu": 2,
+              "memMb": 2048
             }
           }
         }
@@ -466,7 +471,13 @@
                 {
                   "sandboxId": "sbx_1",
                   "kind": "sandbox",
-                  "state": "running"
+                  "state": "running",
+                  "metadata": {},
+                  "template": "base",
+                  "createdAt": "2030-01-01T00:00:00Z",
+                  "expiresAt": "2030-01-01T01:00:00Z",
+                  "cpu": 2,
+                  "memMb": 2048
                 }
               ],
               "nextCursor": "c2"
@@ -548,7 +559,13 @@
             "body": {
               "snapshots": [
                 {
-                  "snapshotId": "snap_1"
+                  "id": "snap_1",
+                  "parent": null,
+                  "name": null,
+                  "sizeBytes": 1,
+                  "createdAt": "2030-01-01T00:00:00Z",
+                  "template": "base",
+                  "kind": "sandbox"
                 }
               ],
               "nextCursor": "s2"
@@ -586,8 +603,13 @@
           "reply": {
             "status": 200,
             "body": {
-              "snapshotId": "snap:1/x",
-              "kind": "sandbox"
+              "kind": "sandbox",
+              "id": "snap:1/x",
+              "parent": null,
+              "name": null,
+              "sizeBytes": 1,
+              "createdAt": "2030-01-01T00:00:00Z",
+              "template": "base"
             }
           }
         }
@@ -842,7 +864,12 @@
               "sandboxId": "pool-a:vm-7:org-42.sig",
               "kind": "sandbox",
               "state": "running",
-              "expiresAt": "2030-01-01T00:00:00Z"
+              "expiresAt": "2030-01-01T00:00:00Z",
+              "metadata": {},
+              "template": "base",
+              "createdAt": "2030-01-01T00:00:00Z",
+              "cpu": 2,
+              "memMb": 2048
             }
           }
         }
@@ -884,12 +911,24 @@
                 {
                   "sandboxId": "sbx_1",
                   "kind": "sandbox",
-                  "state": "running"
+                  "state": "running",
+                  "metadata": {},
+                  "template": "base",
+                  "createdAt": "2030-01-01T00:00:00Z",
+                  "expiresAt": "2030-01-01T01:00:00Z",
+                  "cpu": 2,
+                  "memMb": 2048
                 },
                 {
                   "sandboxId": "sbx_2",
                   "kind": "sandbox",
-                  "state": "running"
+                  "state": "running",
+                  "metadata": {},
+                  "template": "base",
+                  "createdAt": "2030-01-01T00:00:00Z",
+                  "expiresAt": "2030-01-01T01:00:00Z",
+                  "cpu": 2,
+                  "memMb": 2048
                 }
               ],
               "nextCursor": "c2"
@@ -918,7 +957,13 @@
                 {
                   "sandboxId": "sbx_3",
                   "kind": "sandbox",
-                  "state": "running"
+                  "state": "running",
+                  "metadata": {},
+                  "template": "base",
+                  "createdAt": "2030-01-01T00:00:00Z",
+                  "expiresAt": "2030-01-01T01:00:00Z",
+                  "cpu": 2,
+                  "memMb": 2048
                 }
               ]
             }

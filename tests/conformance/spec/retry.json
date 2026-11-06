@@ -31,7 +31,13 @@
             "body": {
               "sandboxId": "pool-a:vm-7:org-42.sig",
               "kind": "sandbox",
-              "state": "running"
+              "state": "running",
+              "metadata": {},
+              "template": "base",
+              "createdAt": "2030-01-01T00:00:00Z",
+              "expiresAt": "2030-01-01T01:00:00Z",
+              "cpu": 2,
+              "memMb": 2048
             }
           }
         }
@@ -74,7 +80,13 @@
             "body": {
               "sandboxId": "pool-a:vm-7:org-42.sig",
               "kind": "sandbox",
-              "state": "running"
+              "state": "running",
+              "metadata": {},
+              "template": "base",
+              "createdAt": "2030-01-01T00:00:00Z",
+              "expiresAt": "2030-01-01T01:00:00Z",
+              "cpu": 2,
+              "memMb": 2048
             }
           }
         }
@@ -269,7 +281,13 @@
             "body": {
               "sandboxId": "pool-a:vm-7:org-42.sig",
               "kind": "sandbox",
-              "state": "running"
+              "state": "running",
+              "metadata": {},
+              "template": "base",
+              "createdAt": "2030-01-01T00:00:00Z",
+              "expiresAt": "2030-01-01T01:00:00Z",
+              "cpu": 2,
+              "memMb": 2048
             }
           }
         }
@@ -317,7 +335,13 @@
             "body": {
               "sandboxId": "pool-a:vm-7:org-42.sig",
               "kind": "sandbox",
-              "state": "running"
+              "state": "running",
+              "metadata": {},
+              "template": "base",
+              "createdAt": "2030-01-01T00:00:00Z",
+              "expiresAt": "2030-01-01T01:00:00Z",
+              "cpu": 2,
+              "memMb": 2048
             }
           }
         }
@@ -365,7 +389,13 @@
             "body": {
               "sandboxId": "pool-a:vm-7:org-42.sig",
               "kind": "sandbox",
-              "state": "running"
+              "state": "running",
+              "metadata": {},
+              "template": "base",
+              "createdAt": "2030-01-01T00:00:00Z",
+              "expiresAt": "2030-01-01T01:00:00Z",
+              "cpu": 2,
+              "memMb": 2048
             }
           }
         }
@@ -410,7 +440,13 @@
             "body": {
               "sandboxId": "pool-a:vm-7:org-42.sig",
               "kind": "sandbox",
-              "state": "running"
+              "state": "running",
+              "metadata": {},
+              "template": "base",
+              "createdAt": "2030-01-01T00:00:00Z",
+              "expiresAt": "2030-01-01T01:00:00Z",
+              "cpu": 2,
+              "memMb": 2048
             }
           }
         }

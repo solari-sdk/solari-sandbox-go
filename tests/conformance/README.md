@@ -25,6 +25,11 @@ test/                       self-tests of the lib and the mock
 `{type,status,code,retryable}`, `runner.test.mjs` runs every row of `spec/{wire,errors,retry}.json` through the mock,
 `unsupported.json` / `knownGaps.json` are the per-language lists described below. Other languages add their own directory.
 
+`py/` is the Python runner (`adapter.py`, `test_runner.py`, `unsupported.json`, `knownGaps.json`): it starts `mock-server.mjs` as a process per row,
+runs every row against `solari_sandbox` / `solari_desktop` / `solari_core`, and holds the same still-fails rule. `py/test_live_smoke.py` is the
+one live-staging row (create, get, kill, gone), marker `live`, off by default. Run: `python -m pytest -c conformance/py/pytest.ini conformance/py`
+(from `sdk/`, after `pip install httpx pytest pytest-asyncio pydantic -e python-core -e python-sandbox -e python-desktop`).
+
 ## Case format
 
 A spec file is an object. Every array-valued key is a **named group** of **rows** (a `{ "rules": [...] }` value works too; a
