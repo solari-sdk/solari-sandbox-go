@@ -17,7 +17,7 @@ Requires Go 1.23+ and `github.com/gorilla/websocket`.
 
 - **Context-first.** Every network method takes `ctx context.Context` first.
 - **Errors as typed values.** `*AuthError`, `*PlanError`, `*ConcurrencyLimitError`,
-  `*NoCapacityError`, `*GatewayError`, `*ActionError`, `*ConnectionError`,
+  `*NoCapacityError`, `*SandboxNotStoppedError`, `*GatewayError`, `*ActionError`, `*ConnectionError`,
   `*TimeoutError`, all embedding the base `*SolariError`. Match with `errors.As`.
 - **Two transports.** REST to the gateway for session lifecycle + the one-shot
   `/exec` fast path; a control WebSocket (newline-delimited JSON RPC) for a live

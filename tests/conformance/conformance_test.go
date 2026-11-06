@@ -263,6 +263,7 @@ func normalizeError(err error) map[string]any {
 	var (
 		auth *solari.AuthError
 		plan *solari.PlanError
+		stop *solari.SandboxNotStoppedError
 		conc *solari.ConcurrencyLimitError
 		capa *solari.NoCapacityError
 		gw   *solari.GatewayError
@@ -274,6 +275,8 @@ func normalizeError(err error) map[string]any {
 		}
 	}
 	switch {
+	case g(err, &stop):
+		set(&stop.GatewayError, "not_stopped")
 	case g(err, &auth):
 		set(&auth.GatewayError, "auth")
 	case g(err, &plan):
@@ -283,7 +286,7 @@ func normalizeError(err error) map[string]any {
 	case g(err, &capa):
 		set(&capa.GatewayError, "no_capacity")
 	case g(err, &gw):
-		set(gw, "gateway") // no typed not-stopped class in Go: see knownGaps.json
+		set(gw, "gateway")
 	}
 	return e
 }

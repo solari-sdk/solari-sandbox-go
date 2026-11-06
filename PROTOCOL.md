@@ -309,6 +309,7 @@ Map gateway/RPC failures to a typed hierarchy (mirror `errors.ts`):
 | HTTP 409 | concurrency/state conflict |
 | HTTP 429 | `ConcurrencyLimitError` (org at session cap — NOT retryable) |
 | body `no_capacity` / 503 | `NoCapacityError` (retryable) |
+| HTTP 409 `NotStopped` / `StartInProgress` (from `start`) | `SandboxNotStoppedError` (current state in `State`) |
 | other non-2xx | `GatewayError(status, message, body?)` |
 | WS RPC `ok:false` | `ActionError(method, message, code?)` |
 | connect/socket failure | `ConnectionError` |

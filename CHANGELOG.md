@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+- **`SandboxNotStoppedError`** for `409 NotStopped` and `409 StartInProgress` from `Client.Start`, the same class the TypeScript and Python SDKs expose. It embeds `*GatewayError` (so `errors.As(&*GatewayError)` still matches, `Status` and `Code` are unchanged) and the sandbox's current state is in `State`. `NotStopped` means the sandbox is in another state (use `Resume` for a paused one); `StartInProgress` means a start is already under way, so poll `Get`. Other 409s (a stopped disk that cannot start, `HostCapabilityMissing`) stay plain `*GatewayError`.
+- `GatewayErrorBody.State`.
+
+### Tests
+- The shared SDK conformance rows now run in CI (`tests/conformance`), including one gated live smoke row.
+
 ## 0.3.4
 
 ### Fixed

@@ -400,6 +400,33 @@ func TestClientStartRefusalCodes(t *testing.T) {
 	}
 }
 
+func TestClientStartNotStoppedIsTyped(t *testing.T) {
+	for _, code := range []string{"NotStopped", "StartInProgress"} {
+		var got string
+		c := startServer(t, 409, map[string]any{"code": code, "error": "refused", "state": "paused", "retryable": false}, &got)
+		_, err := c.Start(context.Background(), "sbx1")
+		var ns *SandboxNotStoppedError
+		if !errors.As(err, &ns) {
+			t.Fatalf("%s: err %v is not a *SandboxNotStoppedError", code, err)
+		}
+		if ns.Status != 409 || ns.Code != code || ns.State != "paused" {
+			t.Errorf("%s: status=%d code=%q state=%q", code, ns.Status, ns.Code, ns.State)
+		}
+		var ge *GatewayError
+		if !errors.As(err, &ge) {
+			t.Errorf("%s: a typed not-stopped error must still match *GatewayError", code)
+		}
+	}
+	// Other 409s stay plain gateway errors: a disk refusal is not "not stopped".
+	var got string
+	c := startServer(t, 409, map[string]any{"code": "StoppedDiskMissing", "error": "x", "retryable": false}, &got)
+	_, err := c.Start(context.Background(), "sbx1")
+	var ns *SandboxNotStoppedError
+	if errors.As(err, &ns) {
+		t.Errorf("StoppedDiskMissing must not be a *SandboxNotStoppedError")
+	}
+}
+
 func TestClientStartCapacityAndLimit(t *testing.T) {
 	var got string
 	c := startServer(t, 429, map[string]any{"error": "cap"}, &got)
