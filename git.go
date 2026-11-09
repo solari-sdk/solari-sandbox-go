@@ -149,66 +149,95 @@ func (g *Git) Clone(ctx context.Context, rawURL string, opts GitCloneOptions) er
 	return err
 }
 
-// Status returns the parsed working-tree status.
+// gitConflictCodes are the two-letter XY codes `git status --porcelain=v1` uses for an unmerged path.
+var gitConflictCodes = map[string]bool{"DD": true, "AU": true, "UD": true, "UA": true, "DU": true, "AA": true, "UU": true}
+
+// Status returns the parsed working-tree status. It runs `git status --porcelain=v1 -z --branch
+// --untracked-files=all`, so paths come back verbatim (no quoting of spaces, quotes or non-ASCII), a rename is its new
+// path with the old one in OrigPath, a conflicted path is listed once in Conflicted, and an untracked directory lists
+// its files.
 func (g *Git) Status(ctx context.Context, cwd string) (*GitStatus, error) {
-	out, err := g.mustGit(ctx, []string{"status", "--porcelain=v1", "--branch"}, cwd, nil, "")
+	out, err := g.mustGit(ctx, []string{"status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"}, cwd, nil, "")
 	if err != nil {
 		return nil, err
 	}
+	return parseGitStatusZ(out), nil
+}
+
+// parseGitStatusZ parses `git status --porcelain=v1 -z --branch`: a "## branch" record, then "XY path" records ("XY new"
+// followed by a separate "old" record for a rename or copy).
+func parseGitStatusZ(out string) *GitStatus {
 	st := &GitStatus{
-		Staged:    []string{},
-		Modified:  []string{},
-		Untracked: []string{},
-		Clean:     true,
+		Staged:     []string{},
+		Modified:   []string{},
+		Untracked:  []string{},
+		Conflicted: []string{},
+		Entries:    []GitStatusEntry{},
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if len(line) == 0 {
+	recs := strings.Split(out, "\x00")
+	for i := 0; i < len(recs); i++ {
+		rec := recs[i]
+		if rec == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "## ") {
-			head := line[3:]
+		if strings.HasPrefix(rec, "## ") {
+			head := rec[3:]
 			if strings.HasPrefix(head, "HEAD (no branch)") {
 				st.Detached = true
-			} else {
-				// "main...origin/main [ahead 1, behind 2]" | "main" | "No commits yet on main"
-				body := head
-				if m := reNoCommits.FindStringSubmatch(head); m != nil {
-					body = m[1]
+				continue
+			}
+			// "main...origin/main [ahead 1, behind 2]" | "main...origin/main [gone]" | "main" | "No commits yet on main"
+			body := head
+			if m := reNoCommits.FindStringSubmatch(head); m != nil {
+				body = m[1]
+			}
+			ab := reBracket.FindStringSubmatch(head)
+			if ab != nil {
+				body = strings.TrimSuffix(body, " ["+ab[1]+"]")
+			}
+			names := strings.SplitN(body, "...", 2)
+			st.Branch = names[0]
+			if len(names) == 2 && names[1] != "" {
+				st.Upstream = names[1]
+			}
+			if ab != nil {
+				if a := reAhead.FindStringSubmatch(ab[1]); a != nil {
+					st.Ahead, _ = strconv.Atoi(a[1])
 				}
-				beforeDots := strings.SplitN(body, "...", 2)[0]
-				st.Branch = strings.SplitN(beforeDots, " ", 2)[0]
-				if ab := reBracket.FindStringSubmatch(head); ab != nil {
-					inner := ab[1]
-					if a := reAhead.FindStringSubmatch(inner); a != nil {
-						st.Ahead, _ = strconv.Atoi(a[1])
-					}
-					if b := reBehind.FindStringSubmatch(inner); b != nil {
-						st.Behind, _ = strconv.Atoi(b[1])
-					}
+				if b := reBehind.FindStringSubmatch(ab[1]); b != nil {
+					st.Behind, _ = strconv.Atoi(b[1])
 				}
 			}
 			continue
 		}
-		if len(line) < 3 {
+		if len(rec) < 3 {
 			continue
 		}
-		xy := line[0:2]
-		path := line[3:]
-		if xy == "??" {
+		xy, path := rec[:2], rec[3:]
+		entry := GitStatusEntry{Path: path, Index: xy[:1], Worktree: xy[1:2]}
+		if xy[0] == 'R' || xy[0] == 'C' || xy[1] == 'R' || xy[1] == 'C' {
+			if i+1 < len(recs) {
+				i++
+				entry.OrigPath = recs[i]
+			}
+		}
+		st.Entries = append(st.Entries, entry)
+		switch {
+		case xy == "??":
 			st.Untracked = append(st.Untracked, path)
-		} else if len(xy) == 2 {
-			index := xy[0]
-			work := xy[1]
-			if index != ' ' && index != '?' {
+		case gitConflictCodes[xy]:
+			st.Conflicted = append(st.Conflicted, path)
+		case xy != "!!":
+			if xy[0] != ' ' {
 				st.Staged = append(st.Staged, path)
 			}
-			if work != ' ' && work != '?' {
+			if xy[1] != ' ' {
 				st.Modified = append(st.Modified, path)
 			}
 		}
 	}
-	st.Clean = len(st.Staged) == 0 && len(st.Modified) == 0 && len(st.Untracked) == 0
-	return st, nil
+	st.Clean = len(st.Entries) == 0
+	return st
 }
 
 // Add stages paths (use ["."] for everything). A no-op on empty paths; the `--`
@@ -305,9 +334,10 @@ func (g *Git) Checkout(ctx context.Context, ref string, cwd string, create bool)
 	return err
 }
 
-// Branches lists local branches (name, short commit, whether it's HEAD).
+// Branches lists local branches (name, short commit, upstream, whether it's HEAD). It uses `for-each-ref refs/heads`,
+// so only real branches are listed: a detached HEAD is not a branch and none is current (Status().Detached says so).
 func (g *Git) Branches(ctx context.Context, cwd string) ([]GitBranch, error) {
-	out, err := g.mustGit(ctx, []string{"branch", "--format=%(HEAD)%1f%(refname:short)%1f%(objectname:short)"}, cwd, nil, "")
+	out, err := g.mustGit(ctx, []string{"for-each-ref", "--format=%(HEAD)%1f%(refname:short)%1f%(objectname:short)%1f%(upstream:short)", "refs/heads"}, cwd, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -317,38 +347,44 @@ func (g *Git) Branches(ctx context.Context, cwd string) ([]GitBranch, error) {
 			continue
 		}
 		fields := strings.Split(line, "\x1f")
-		head := field(fields, 0)
 		branches = append(branches, GitBranch{
-			Name:    field(fields, 1),
-			Commit:  field(fields, 2),
-			Current: head == "*",
+			Name:     field(fields, 1),
+			Commit:   field(fields, 2),
+			Upstream: field(fields, 3),
+			Current:  field(fields, 0) == "*",
 		})
 	}
 	return branches, nil
 }
 
-// Log returns recent commits, newest first.
+// Log returns recent commits, newest first. Records end with \x1e and fields with \x1f, so a multi-line body cannot be
+// mistaken for the next commit. Message is the subject and Body the rest. A repository with no commit yet has an empty
+// history, not an error.
 func (g *Git) Log(ctx context.Context, opts GitLogOptions) ([]GitCommit, error) {
-	args := []string{"log", "--format=%H%x1f%an%x1f%ae%x1f%aI%x1f%s"}
+	args := []string{"log", "--format=%H%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%b%x1e"}
 	if opts.MaxCount > 0 {
 		args = append(args, "--max-count="+strconv.Itoa(opts.MaxCount))
 	}
 	out, err := g.mustGit(ctx, args, opts.Cwd, nil, "")
 	if err != nil {
+		if strings.Contains(err.Error(), "does not have any commits yet") {
+			return []GitCommit{}, nil
+		}
 		return nil, err
 	}
 	commits := []GitCommit{}
-	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) == "" {
+	for _, rec := range strings.Split(out, "\x1e") {
+		if strings.TrimSpace(rec) == "" {
 			continue
 		}
-		fields := strings.Split(line, "\x1f")
+		fields := strings.Split(strings.TrimPrefix(rec, "\n"), "\x1f")
 		commits = append(commits, GitCommit{
 			Hash:    field(fields, 0),
 			Author:  field(fields, 1),
 			Email:   field(fields, 2),
 			Date:    field(fields, 3),
 			Message: field(fields, 4),
+			Body:    strings.TrimRight(field(fields, 5), "\n"),
 		})
 	}
 	return commits, nil

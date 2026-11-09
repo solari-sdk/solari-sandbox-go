@@ -291,21 +291,34 @@ type RunCodeOptions struct {
 
 // GitStatus is the parsed working-tree status (git.status).
 type GitStatus struct {
-	Branch    string   `json:"branch"`
-	Detached  bool     `json:"detached"`
-	Ahead     int      `json:"ahead"`
-	Behind    int      `json:"behind"`
-	Staged    []string `json:"staged"`
-	Modified  []string `json:"modified"`
-	Untracked []string `json:"untracked"`
-	Clean     bool     `json:"clean"`
+	Branch     string           `json:"branch"`
+	Upstream   string           `json:"upstream,omitempty"`
+	Detached   bool             `json:"detached"`
+	Ahead      int              `json:"ahead"`
+	Behind     int              `json:"behind"`
+	Staged     []string         `json:"staged"`
+	Modified   []string         `json:"modified"`
+	Untracked  []string         `json:"untracked"`
+	Conflicted []string         `json:"conflicted"`
+	Entries    []GitStatusEntry `json:"entries"`
+	Clean      bool             `json:"clean"`
+}
+
+// GitStatusEntry is one path in a git status: Index and Worktree are the two XY status letters (" " for none, "?" for
+// untracked). OrigPath is the old path of a rename or copy.
+type GitStatusEntry struct {
+	Path     string `json:"path"`
+	OrigPath string `json:"origPath,omitempty"`
+	Index    string `json:"index"`
+	Worktree string `json:"worktree"`
 }
 
 // GitBranch is one branch entry (git.branches).
 type GitBranch struct {
-	Name    string `json:"name"`
-	Commit  string `json:"commit"`
-	Current bool   `json:"current"`
+	Name     string `json:"name"`
+	Commit   string `json:"commit"`
+	Upstream string `json:"upstream,omitempty"`
+	Current  bool   `json:"current"`
 }
 
 // GitCommit is one commit record (git.log).
@@ -314,7 +327,8 @@ type GitCommit struct {
 	Author  string `json:"author"`
 	Email   string `json:"email"`
 	Date    string `json:"date"`
-	Message string `json:"message"`
+	Message string `json:"message"` // the subject line
+	Body    string `json:"body"`    // the rest of the message
 }
 
 // GitCloneOptions configure Git.Clone.
