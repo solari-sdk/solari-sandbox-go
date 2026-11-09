@@ -182,6 +182,19 @@ type createInput struct {
 	User string   `json:"user"`
 	Cmd  string   `json:"cmd"`
 	Args []string `json:"args"`
+	// git.* rows
+	Cwd      string `json:"cwd"`
+	MaxCount int    `json:"maxCount"`
+}
+
+// jsonMap round-trips v through JSON into the neutral map the rows compare against.
+func jsonMap(v any) (map[string]any, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	return m, json.Unmarshal(b, &m)
 }
 
 func (c createInput) options(kind solari.SandboxKind) solari.CreateOptions {
@@ -292,6 +305,43 @@ var ops = map[string]adapterFn{
 		}
 		return map[string]any{"exitCode": float64(r.ExitCode), "stdout": r.Stdout, "stderr": r.Stderr, "timedOut": r.TimedOut, "oomKilled": r.OOMKilled}, nil
 	},
+	// git.*: the SDK runs `git` through commands.run (REST /exec here); results come back as JSON, lists wrapped as {"list": [...]}.
+	"git.status": func(ctx context.Context, c *solari.Client, in createInput) (map[string]any, error) {
+		s, err := c.Create(ctx, solari.CreateOptions{Template: "base"})
+		if err != nil {
+			return nil, err
+		}
+		defer s.Close()
+		st, err := s.Git.Status(context.WithoutCancel(ctx), in.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(st)
+	},
+	"git.branches": func(ctx context.Context, c *solari.Client, in createInput) (map[string]any, error) {
+		s, err := c.Create(ctx, solari.CreateOptions{Template: "base"})
+		if err != nil {
+			return nil, err
+		}
+		defer s.Close()
+		bs, err := s.Git.Branches(context.WithoutCancel(ctx), in.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(map[string]any{"list": bs})
+	},
+	"git.log": func(ctx context.Context, c *solari.Client, in createInput) (map[string]any, error) {
+		s, err := c.Create(ctx, solari.CreateOptions{Template: "base"})
+		if err != nil {
+			return nil, err
+		}
+		defer s.Close()
+		cs, err := s.Git.Log(context.WithoutCancel(ctx), solari.GitLogOptions{Cwd: in.Cwd, MaxCount: in.MaxCount})
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(map[string]any{"list": cs})
+	},
 	"sandbox.pause":  viaHandle(func(ctx context.Context, s *solari.Sandbox) error { return s.Pause(ctx) }),
 	"sandbox.resume": viaHandle(func(ctx context.Context, s *solari.Sandbox) error { return s.Resume(ctx) }),
 	"sandbox.start":  viaHandle(func(ctx context.Context, s *solari.Sandbox) error { return s.Start(ctx) }),
@@ -355,6 +405,18 @@ func subsetMismatch(exp, act any, path string) string {
 				return fmt.Sprintf("%s.%s: missing (expected %v)", path, k, ev)
 			}
 			if m := subsetMismatch(ev, av, path+"."+k); m != "" {
+				return m
+			}
+		}
+		return ""
+	case []any:
+		// Same length, each element a subset match (so a row can name only the fields it cares about in a list of objects).
+		a, ok := act.([]any)
+		if !ok || len(a) != len(e) {
+			return fmt.Sprintf("%s: expected array of %d, got %v", path, len(e), act)
+		}
+		for i := range e {
+			if m := subsetMismatch(e[i], a[i], fmt.Sprintf("%s[%d]", path, i)); m != "" {
 				return m
 			}
 		}

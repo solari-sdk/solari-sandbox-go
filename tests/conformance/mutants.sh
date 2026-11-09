@@ -26,4 +26,11 @@ run "negative timeout is not rejected"    commands.go 's#if timeoutMs < 0 {#if f
 run "bad user is not rejected"            commands.go 's#!validUser(opts.User)#false#' || bad=1
 run "HostCapabilityMissing is not retried" commands.go 's#!isRouteUnavailable(err) \&\& !isHostCapabilityMissing(err)#!isRouteUnavailable(err)#' || bad=1
 run "cancellable call still uses REST"    commands.go 's#restPlain \&\& (ctx.Done() == nil || s.shared.Load())#restPlain#' || bad=1
+run "status drops -z"                     git.go 's#"--porcelain=v1", "-z", "--branch"#"--porcelain=v1", "--branch"#' || bad=1
+run "status lists untracked dirs, not files" git.go 's#"--untracked-files=all"}#"--untracked-files=normal"}#' || bad=1
+run "conflicts are staged/modified too"   git.go 's#case gitConflictCodes\[xy\]:#case false:#' || bad=1
+run "rename loses the old path"           git.go 's#entry.OrigPath = recs\[i\]#entry.OrigPath = ""#' || bad=1
+run "branches use git branch"             git.go 's#"for-each-ref", "--format#"branch", "--format#' || bad=1
+run "log drops the body"                  git.go 's#Body:    strings.TrimRight(field(fields, 5), "\\n"),#Body:    "",#' || bad=1
+run "empty repo log is an error"          git.go 's#strings.Contains(err.Error(), "does not have any commits yet")#false#' || bad=1
 exit $bad

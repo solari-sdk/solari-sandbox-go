@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.0
+
+`Git.Status`, `Git.Branches` and `Git.Log` no longer lose information. The retest found their parsing lossy: quoted paths came back with their quotes and octal escapes, a rename was one string "old -> new", an untracked directory was listed as "dir/", a conflict showed up as both staged and modified, a detached HEAD was a pseudo branch, and `Log` kept only the subject and failed on an empty repository.
+
+### Changed
+- **`Status` runs `git status --porcelain=v1 -z --branch --untracked-files=all`.** Paths are verbatim (spaces, quotes and non-ASCII are not quoted or escaped), a rename or copy is its new path with the old one in `OrigPath`, and an untracked directory lists its files. A path git reports as unmerged (`DD AU UD UA DU AA UU`) is in `Conflicted` only, not in `Staged` or `Modified`. `Clean` is true when git reports no entries at all.
+- **`Branches` uses `git for-each-ref refs/heads`**: only real branches are listed. With a detached HEAD no branch is `Current` (`Status().Detached` says so); before, `git branch` printed "(HEAD detached at abc)" as a branch named that.
+- **`Log` returns an empty list for a repository with no commit** instead of an error. Any other git failure is still an error.
+
+### Added
+- `GitStatus.Upstream`, `Conflicted` and `Entries` (`[]GitStatusEntry{Path, OrigPath, Index, Worktree}`, the two XY letters per path). `Detached` is true for "HEAD (no branch)", and `Ahead`/`Behind` are 0 when the upstream is gone.
+- `GitBranch.Upstream`, the tracking branch when set.
+- `GitCommit.Body`: the rest of the commit message; `Message` stays the subject line.
+
 ## 0.5.0
 
 `Commands.Run` now behaves the same whether it goes over REST (`/exec`) or the control WebSocket (`cmd.start`). Measured on staging with the same command on both paths; the only difference left is the guest's own text for a bad `Cwd` on the WebSocket (it names the binary, not the directory).
