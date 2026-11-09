@@ -33,4 +33,5 @@ run "rename loses the old path"           git.go 's#entry.OrigPath = recs\[i\]#e
 run "branches use git branch"             git.go 's#"for-each-ref", "--format#"branch", "--format#' || bad=1
 run "log drops the body"                  git.go 's#Body:    strings.TrimRight(field(fields, 5), "\\n"),#Body:    "",#' || bad=1
 run "empty repo log is an error"          git.go 's#strings.Contains(err.Error(), "does not have any commits yet")#false#' || bad=1
+run "copy source parsed as its own entry" git.go "s#xy\[0\] == 'R' || xy\[0\] == 'C' || xy\[1\] == 'R' || xy\[1\] == 'C'#xy[0] == 'R' || xy[1] == 'R'#" || bad=1
 exit $bad
