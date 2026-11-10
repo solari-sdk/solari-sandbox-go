@@ -40,6 +40,22 @@ type GatewayError struct {
 func (e *GatewayError) Error() string { return e.Message }
 func (e *GatewayError) Unwrap() error { return &e.SolariError }
 
+// GitError is a git command the sandbox ran that exited non-zero (Clone, Push, Commit ... on a failed `git`). Subcommand and
+// ExitCode say which and how; Message is git's own stderr with any credential masked. It is a *SolariError like every
+// other error the SDK returns, so errors.As(err, &*SolariError) matches it.
+type GitError struct {
+	SolariError
+	Subcommand string
+	ExitCode   int
+}
+
+func (e *GitError) Error() string { return e.Message }
+func (e *GitError) Unwrap() error { return &e.SolariError }
+
+func newGitError(subcommand string, exitCode int, msg string) *GitError {
+	return &GitError{SolariError: SolariError{Message: msg}, Subcommand: subcommand, ExitCode: exitCode}
+}
+
 // ValidationError maps HTTP 400: the request was refused as invalid (a bad field, a limit exceeded); Code and the message say
 // which. The SDK also returns it, before sending anything, for a Commands.Run option the gateway would refuse (a negative
 // TimeoutMs, a User that is not a unix user name).

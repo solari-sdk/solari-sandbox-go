@@ -185,6 +185,12 @@ type CommandResult struct {
 	ExitCode int    `json:"exitCode"`
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
+	// StdoutBytes / StderrBytes are the exact output bytes. Stdout / Stderr stay UTF-8 text (each invalid byte becomes
+	// U+FFFD), so a command that prints binary data (an image, a tarball, `cat` of a file) is read from these. They are exact
+	// on the control-socket path; on REST /exec they are exact when the gateway sends stdoutBase64 / stderrBase64 (it does for
+	// output that is not valid UTF-8), and otherwise the bytes of the text.
+	StdoutBytes []byte `json:"-"`
+	StderrBytes []byte `json:"-"`
 	// TimedOut is true when the command hit its TimeoutMs and was killed; ExitCode is -1 then.
 	TimedOut bool `json:"timedOut,omitempty"`
 	// OOMKilled is true when the guest killed the command for exceeding the sandbox's memory limit (ExitCode 137). Only the

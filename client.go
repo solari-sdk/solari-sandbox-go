@@ -7,6 +7,7 @@ package solari
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -213,11 +214,16 @@ func (c *Client) Start(ctx context.Context, sandboxID string) (string, error) {
 
 // exec is the one-shot command fast path (POST /sandboxes/:id/exec).
 func (c *Client) exec(ctx context.Context, id string, req execOneShotRequest) (*CommandResult, error) {
-	var res CommandResult
+	// The route sends the text and, for output that is not valid UTF-8, the exact bytes as base64 beside it.
+	var wire struct {
+		CommandResult
+		StdoutBase64 string `json:"stdoutBase64"`
+		StderrBase64 string `json:"stderrBase64"`
+	}
 	if req.Args == nil {
 		req.Args = []string{} // always sent, as the other SDKs do
 	}
-	err := c.http.request(ctx, http.MethodPost, "/sandboxes/"+encodeURIComponent(id)+"/exec", req, httpRequestOptions{}, &res)
+	err := c.http.request(ctx, http.MethodPost, "/sandboxes/"+encodeURIComponent(id)+"/exec", req, httpRequestOptions{}, &wire)
 	if err != nil {
 		// A command that outlived its deadline is a RESULT, as it is over the control socket: exit -1, timedOut. The gateway
 		// reports it as 400 ExecTimeout, or, when the guest's read of the output timed out first, as a 502 "... i/o timeout".
@@ -227,7 +233,20 @@ func (c *Client) exec(ctx context.Context, id string, req execOneShotRequest) (*
 		}
 		return nil, err
 	}
+	res := wire.CommandResult
+	res.StdoutBytes = execBytes(wire.StdoutBase64, res.Stdout)
+	res.StderrBytes = execBytes(wire.StderrBase64, res.Stderr)
 	return &res, nil
+}
+
+// execBytes is the exact output of one stream: the gateway's base64 when it sent one, else the bytes of the text.
+func execBytes(b64, text string) []byte {
+	if b64 != "" {
+		if b, err := base64.StdEncoding.DecodeString(b64); err == nil {
+			return b
+		}
+	}
+	return []byte(text)
 }
 
 // Sandbox is a live session handle exposing the core namespaces.

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0
+
+Closes two gaps the 2026-11-10 retest found in 0.5/0.6: a Go caller could not read a command's binary output, and a failed `git` call was not a `*SolariError`.
+
+### Added
+- **`CommandResult.StdoutBytes` / `StderrBytes`**: the exact output bytes, as Rust (`stdout_bytes`) and C++ already had. `Stdout` / `Stderr` stay UTF-8 text (each invalid byte becomes U+FFFD), so a command that prints binary data (an image, a tarball, `cat` of a file) is read from the byte fields. They are exact on the control socket; on REST `/exec` they are exact when the gateway sends `stdoutBase64` / `stderrBase64` (it does for output that is not valid UTF-8), and otherwise the bytes of the text.
+- **`GitError`**: a `git` command the sandbox ran that exited non-zero (`Subcommand`, `ExitCode`, git's own message with any credential masked). It embeds `SolariError`, so `errors.As(err, &*SolariError)` matches every git failure.
+
+### Changed
+- **Git failures are typed.** `Git.Clone`, `Add`, `Commit`, `Push`, `Pull`, `Checkout`, `Branches`, `Log` and `Status` return `*GitError` where they returned an untyped `fmt.Errorf`; the message text is unchanged, so code that matches on it still works. Input the SDK refuses before running git (a credential containing a line break or NUL, a ref or remote starting with `-`) is now a `*ValidationError`, the same class as a bad `Commands.Run` option.
+
+### Upgrading from 0.4 (behaviour changes since 0.5 that can break callers)
+- **`Commands.Run` validates before it picks a transport (0.5.0):** a negative `TimeoutMs`, or a `User` that is not `root` or a unix user name, now returns `*ValidationError` instead of reaching the gateway.
+- **A run with no `TimeoutMs` gets the 10-minute tier maximum on both paths (0.5.0).** On the control-socket path it used to have no deadline, so a long job that relied on that now needs an explicit `TimeoutMs` of up to 600000.
+- **A cancellable call (a context that can be cancelled) runs over the control connection (0.5.0)**, not REST, because cancelling a REST request does not stop the guest process. Cancel errors match `errors.Is(err, context.Canceled)`.
+- **`Commands.Run` connects the control channel itself (0.5.0)** when it needs it; code that called `Connect()` first still works.
+- **A command that outlives its deadline is a result, not an error (0.5.0):** exit -1 with `TimedOut` true, on both paths.
+- **`Git.Status`, `Branches` and `Log` parse differently (0.6.0):** status paths are verbatim (no quotes or octal escapes), `Branches` lists only real branches (no branch is `Current` on a detached HEAD), and `Log` on a repository with no commit returns an empty list instead of an error.
+
 ## 0.6.0
 
 `Git.Status`, `Git.Branches` and `Git.Log` no longer lose information. The retest found their parsing lossy: quoted paths came back with their quotes and octal escapes, a rename was one string "old -> new", an untracked directory was listed as "dir/", a conflict showed up as both staged and modified, a detached HEAD was a pseudo branch, and `Log` kept only the subject and failed on an empty repository.

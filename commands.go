@@ -436,7 +436,10 @@ func (a *cmdAccumulator) add(stream, data string) {
 func (a *cmdAccumulator) result(code int) *CommandResult {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return &CommandResult{ExitCode: code, Stdout: validUTF8(a.stdout), Stderr: validUTF8(a.stderr)}
+	return &CommandResult{
+		ExitCode: code, Stdout: validUTF8(a.stdout), Stderr: validUTF8(a.stderr),
+		StdoutBytes: append([]byte(nil), a.stdout...), StderrBytes: append([]byte(nil), a.stderr...),
+	}
 }
 
 // validUTF8 decodes the whole stream at once, so a character split across chunks survives, and replaces each invalid byte
