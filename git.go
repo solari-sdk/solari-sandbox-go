@@ -62,7 +62,7 @@ func (g *Git) mustGit(ctx context.Context, args []string, cwd string, env map[st
 		if secret != "" {
 			detail = strings.ReplaceAll(detail, secret, "***")
 		}
-		return "", fmt.Errorf("git %s failed (exit %d): %s", gitSubcommand(args), r.ExitCode, detail)
+		return "", newGitError(gitSubcommand(args), r.ExitCode, fmt.Sprintf("git %s failed (exit %d): %s", gitSubcommand(args), r.ExitCode, detail))
 	}
 	return r.Stdout, nil
 }
@@ -84,7 +84,7 @@ func gitAuth(remoteURL, username, password string) (cfg []string, env map[string
 		return nil, nil, false, nil
 	}
 	if strings.ContainsAny(username, "\r\n\x00") || strings.ContainsAny(password, "\r\n\x00") {
-		return nil, nil, false, fmt.Errorf("git credentials must not contain line breaks or NUL")
+		return nil, nil, false, newValidationError("git credentials must not contain line breaks or NUL")
 	}
 	u, perr := url.Parse(remoteURL)
 	if perr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -121,7 +121,7 @@ func gitSubcommand(args []string) string {
 // rejectOptionLike refuses user text that git would parse as an option.
 func rejectOptionLike(what, v string) error {
 	if strings.HasPrefix(v, "-") {
-		return fmt.Errorf("git %s must not start with \"-\": %q", what, v)
+		return newValidationError(fmt.Sprintf("git %s must not start with \"-\": %q", what, v))
 	}
 	return nil
 }
