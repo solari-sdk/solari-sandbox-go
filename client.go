@@ -35,12 +35,17 @@ type ClientOptions struct {
 	// RetryDelayMs, when non-nil, replaces exponential backoff with a fixed
 	// delay (0 disables the wait — handy for tests).
 	RetryDelayMs *int
+	// IdleCloseMs closes the control socket after this long with nothing using it (no call in flight, no running command, no open
+	// PTY or watch); the next call reopens it by itself. An open control socket counts as activity at the gateway, so a socket
+	// left open keeps an idle sandbox from pausing or expiring on time. 0 means the default, 3000; a negative value disables it.
+	IdleCloseMs int
 }
 
 // Client talks the SDK ⇆ Gateway REST API and hands back Sandbox handles.
 type Client struct {
 	http          *httpTransport
 	callTimeoutMs int
+	idleCloseMs   int
 }
 
 // NewClient constructs a Client.
@@ -62,7 +67,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{http: ht, callTimeoutMs: opts.CallTimeoutMs}, nil
+	return &Client{http: ht, callTimeoutMs: opts.CallTimeoutMs, idleCloseMs: opts.IdleCloseMs}, nil
 }
 
 // buildCreateBody maps CreateOptions onto the POST /sandboxes wire body.
@@ -303,6 +308,7 @@ func (c *Client) newSandbox(resp CreateSandboxResponse) (*Sandbox, error) {
 		resumeHook:   c.Resume,
 		startHook:    c.Start,
 	}
+	sb.ch.setIdleClose(c.idleCloseMs)
 	sb.Commands = &Commands{sb: sb}
 	sb.Files = &Files{sb: sb}
 	sb.Code = &Code{sb: sb}
