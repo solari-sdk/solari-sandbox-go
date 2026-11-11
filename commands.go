@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -279,7 +280,9 @@ func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOpti
 		}
 		h.push(handleEvent{chunk: &dataChunk{stream: stream, data: data}})
 	})
+	var exited atomic.Bool
 	s.ch.onFrame("cmd.exit", cmdID, func(f asyncFrame) {
+		exited.Store(true)
 		s.ch.offFrame("cmd.data", cmdID)
 		s.ch.offFrame("cmd.exit", cmdID)
 		s.ch.offStreamClose(cmdID)
@@ -289,6 +292,14 @@ func (s *Sandbox) startCommand(ctx context.Context, cmd string, opts CommandOpti
 		}
 		h.finishExit(code, nil)
 	})
+	// A command that exited before its handle existed had its buffered cmd.exit replayed by the registration above, and onFrame
+	// registers a handler only after the replay: the handlers it just ran to unregister were registered afterwards and stayed.
+	// Unregister them now, or the channel counts the socket as in use for good and never idle-closes.
+	if exited.Load() {
+		s.ch.offFrame("cmd.data", cmdID)
+		s.ch.offFrame("cmd.exit", cmdID)
+		s.ch.offStreamClose(cmdID)
+	}
 
 	return h, nil
 }

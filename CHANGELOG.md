@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.2
+
+### Fixed
+- **`Code.Run` `OnStdout`/`OnStderr` fire while the cell runs.** They were called only after the run finished (a 6 s cell with a tick every 2 s delivered the first output at 6.3 s). The request now carries `stream:true` when a callback is set, and a guest that streams sends output frames before the result; a character split across two frames arrives whole, and the result's complete text is delivered only beyond what the frames already did, so nothing is delivered twice. A guest that predates streaming sends no frames and its whole output is delivered once from the result, as before. Retest C-32.
+- **The control socket closes itself after 3 s with nothing using it, and the next call reopens it.** An open control socket counts as activity at the gateway (it pushes the idle deadline out every 60 s), so a Go program that connected and then went quiet kept its sandbox from pausing or expiring for about 5 minutes. The socket is now closed after `ClientOptions.IdleCloseMs` (default 3000; a negative value disables it) with no call in flight, no running command and no open PTY or watch, as in the TypeScript and Python SDKs. `Connected()` is false while it is closed; any call reopens it by itself. Retest C-17.
+- **A command that exited before its handle existed left its frame handlers registered** (`Commands.Start`: the buffered `cmd.exit` was replayed by the registration, whose handler then stayed registered), which would have kept the socket from ever idle-closing. They are unregistered now.
+
+### Tests
+- A command that exits before its handle exists (its `cmd.exit` buffered ahead of the handle) leaves no "channel closed" hook registered, so the channel can idle-close. Idle-close tests: the socket closes when idle and a later call reopens it, a running command keeps it open and it closes after the command ends, and a fast command (exit already buffered) does not keep it open.
+
 ## 0.7.1
 
 ### Fixed

@@ -103,6 +103,76 @@ type channel struct {
 	orphanFrames   map[string][]asyncFrame
 	orphanCount    int
 	streamClosers  map[string]func(error)
+
+	// Idle close: with nothing using the socket for idleClose, close it; the next call reopens it. idleClosed marks that the
+	// socket was closed by this, not by Close() or a drop, so call() knows to reopen instead of reporting "not connected".
+	idleClose  time.Duration
+	idleTimer  *time.Timer
+	idleClosed bool
+}
+
+// defaultIdleClose is how long the control socket may sit unused before it is closed (the TS and Python SDKs use 3 s too).
+const defaultIdleClose = 3 * time.Second
+
+// setIdleClose applies ClientOptions.IdleCloseMs: 0 is the default, negative disables.
+func (c *channel) setIdleClose(ms int) {
+	c.mu.Lock()
+	switch {
+	case ms == 0:
+		c.idleClose = defaultIdleClose
+	case ms < 0:
+		c.idleClose = 0
+	default:
+		c.idleClose = time.Duration(ms) * time.Millisecond
+	}
+	c.mu.Unlock()
+	c.armIdleClose()
+}
+
+// inUseLocked reports whether anything needs the socket: a call in flight, a command's close hook, or any frame handler
+// (running command, open PTY, watch). Caller holds c.mu.
+func (c *channel) inUseLocked() bool {
+	if len(c.pending) > 0 || len(c.streamClosers) > 0 {
+		return true
+	}
+	for _, m := range c.frameHandlers {
+		if len(m) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// armIdleClose (re)starts the idle timer when the channel is open and unused. Called whenever the channel may have become
+// idle: after connect, after a call returns, after a handler or close hook is unregistered.
+func (c *channel) armIdleClose() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+		c.idleTimer = nil
+	}
+	if c.idleClose <= 0 || !c.connected || c.conn == nil || c.inUseLocked() {
+		return
+	}
+	c.idleTimer = time.AfterFunc(c.idleClose, c.idleFire)
+}
+
+func (c *channel) idleFire() {
+	c.mu.Lock()
+	c.idleTimer = nil
+	if !c.connected || c.conn == nil || c.inUseLocked() {
+		c.mu.Unlock()
+		return
+	}
+	conn := c.conn
+	// Take the socket out of the channel BEFORE closing it: the reader of this socket then sees it is no longer c.conn and its
+	// close is not read as a drop (which would fail everything registered).
+	c.conn = nil
+	c.connected = false
+	c.idleClosed = true
+	c.mu.Unlock()
+	conn.Close()
 }
 
 func newChannel(controlURL string, header http.Header, callTimeout time.Duration) *channel {
@@ -122,6 +192,7 @@ func newChannel(controlURL string, header http.Header, callTimeout time.Duration
 		frameHandlers:  map[string]map[string]frameHandler{},
 		orphanFrames:   map[string][]asyncFrame{},
 		streamClosers:  map[string]func(error){},
+		idleClose:      defaultIdleClose,
 	}
 }
 
@@ -197,8 +268,10 @@ func (c *channel) connectOnce(ctx context.Context, url string) error {
 	c.mu.Lock()
 	c.conn = conn
 	c.connected = true
+	c.idleClosed = false
 	c.mu.Unlock()
 	go c.readLoop(conn)
+	c.armIdleClose()
 	return nil
 }
 
@@ -370,6 +443,11 @@ func (c *channel) failAll(err error) {
 // close tears down the channel locally and rejects in-flight work.
 func (c *channel) close() {
 	c.mu.Lock()
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+		c.idleTimer = nil
+	}
+	c.idleClosed = false
 	c.closed = true
 	c.connected = false
 	conn := c.conn
@@ -429,6 +507,7 @@ func (c *channel) offFrame(typ, id string) {
 		delete(m, id)
 	}
 	c.mu.Unlock()
+	c.armIdleClose()
 }
 
 // onStreamClose registers a "channel closed" callback for a stream id so a drop
@@ -456,6 +535,7 @@ func (c *channel) offStreamClose(id string) {
 	c.mu.Lock()
 	delete(c.streamClosers, id)
 	c.mu.Unlock()
+	c.armIdleClose()
 }
 
 // callOptions tune a single call.
@@ -472,6 +552,15 @@ type callOptions struct {
 // call sends one JSON-RPC request and awaits its correlated reply, returning the
 // raw result JSON.
 func (c *channel) call(ctx context.Context, method string, params interface{}, opts callOptions) (json.RawMessage, error) {
+	defer c.armIdleClose()
+	c.mu.Lock()
+	reopen := c.idleClosed && !c.closed && !c.connected
+	c.mu.Unlock()
+	if reopen { // the socket was closed for being idle, not by Close() or a drop: reopen it by itself
+		if err := c.connect(ctx); err != nil {
+			return nil, err
+		}
+	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -535,6 +624,7 @@ func (c *channel) removePending(id string) {
 	delete(c.pending, id)
 	delete(c.streamHandlers, id)
 	c.mu.Unlock()
+	c.armIdleClose()
 }
 
 // normalizeRPCError extracts a message + code from a reply's error field, which

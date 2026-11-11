@@ -2,7 +2,10 @@ package solari
 
 import (
 	"context"
+	"encoding/base64"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Code is the stateful-kernel namespace on a Sandbox (code.run).
@@ -22,7 +25,38 @@ func (c *Code) Run(ctx context.Context, code string, opts RunCodeOptions) (*RunC
 		params["contextId"] = opts.ContextID
 	}
 
-	raw, err := c.sb.ch.call(ctx, "code.run", params, callOptions{})
+	// Live output: with a callback the request carries stream:true, and a guest that streams sends v1 {id, stream, data} frames
+	// before the result. What was delivered is tracked per stream so the result's (complete) text is only delivered beyond that:
+	// a guest that predates streaming sends no frames, so its whole output is delivered once, from the result.
+	var call callOptions
+	var streamed map[string]*strings.Builder
+	if opts.OnStdout != nil || opts.OnStderr != nil {
+		params["stream"] = true
+		streamed = map[string]*strings.Builder{"stdout": {}, "stderr": {}}
+		dec := map[string]*utf8Stream{"stdout": {}, "stderr": {}}
+		call.onStream = func(stream, data string) {
+			cb := opts.OnStdout
+			if stream == "stderr" {
+				cb = opts.OnStderr
+			} else if stream != "stdout" {
+				return
+			}
+			raw, err := base64.StdEncoding.DecodeString(data)
+			if err != nil || len(raw) == 0 {
+				return
+			}
+			text := dec[stream].push(raw)
+			if text == "" {
+				return
+			}
+			streamed[stream].WriteString(text)
+			if cb != nil {
+				cb(text)
+			}
+		}
+	}
+
+	raw, err := c.sb.ch.call(ctx, "code.run", params, call)
 	if err != nil {
 		if ctx.Err() != nil {
 			go c.interrupt(opts.ContextID) // in the background: the cancelled caller must not wait for the guest
@@ -38,18 +72,41 @@ func (c *Code) Run(ctx context.Context, code string, opts RunCodeOptions) (*RunC
 		r.Results = []CodeResultItem{}
 	}
 
-	// Stream text items, then flatten every present chart to the top level.
+	// Deliver the text the frames did not (everything for an old guest, the unflushed tail for a streaming one), then flatten
+	// every present chart to the top level.
 	charts := []Chart{}
+	var full = map[string]*strings.Builder{"stdout": {}, "stderr": {}}
 	for i := range r.Results {
 		item := r.Results[i]
-		if item.Type == "stdout" && item.Text != "" && opts.OnStdout != nil {
-			opts.OnStdout(item.Text)
-		}
-		if item.Type == "stderr" && item.Text != "" && opts.OnStderr != nil {
-			opts.OnStderr(item.Text)
+		if (item.Type == "stdout" || item.Type == "stderr") && item.Text != "" {
+			full[item.Type].WriteString(item.Text)
 		}
 		if item.Chart != nil {
 			charts = append(charts, *item.Chart)
+		}
+	}
+	for _, kind := range []string{"stdout", "stderr"} {
+		cb := opts.OnStdout
+		if kind == "stderr" {
+			cb = opts.OnStderr
+		}
+		if cb == nil {
+			continue
+		}
+		all, sent := full[kind].String(), ""
+		if streamed != nil {
+			sent = streamed[kind].String()
+		}
+		rest := all
+		if sent != "" {
+			if strings.HasPrefix(all, sent) {
+				rest = all[len(sent):]
+			} else {
+				rest = ""
+			}
+		}
+		if rest != "" {
+			cb(rest)
 		}
 	}
 	r.Charts = charts
@@ -85,4 +142,23 @@ func (c *Code) CreateContext(ctx context.Context, language string) (string, erro
 		return "", err
 	}
 	return res.ContextID, nil
+}
+
+// utf8Stream decodes a byte stream arriving in chunks: a character split across two chunks is held back and completed by the
+// next one; an invalid byte becomes U+FFFD (as validUTF8 does for a whole stream).
+type utf8Stream struct{ tail []byte }
+
+func (u *utf8Stream) push(b []byte) string {
+	b = append(u.tail, b...)
+	cut := len(b)
+	for i := 1; i < utf8.UTFMax && i <= len(b); i++ {
+		if utf8.RuneStart(b[len(b)-i]) {
+			if !utf8.FullRune(b[len(b)-i:]) {
+				cut = len(b) - i
+			}
+			break
+		}
+	}
+	u.tail = append([]byte(nil), b[cut:]...)
+	return validUTF8(b[:cut])
 }
