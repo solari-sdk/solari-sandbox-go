@@ -22,7 +22,7 @@ func TestCommandThatExitsBeforeItsHandleExistsDoesNotPinTheSocketOpen(t *testing
 		}
 		reply := `{"id":"1","ok":true,"result":{"cmdId":"c1"}}`
 		exit := `{"type":"cmd.exit","cmdId":"c1","exitCode":0}`
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(reply+"\n"+exit+"\n"))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(exit+"\n"+reply+"\n")) // the exit first: it is buffered as an orphan for certain
 		time.Sleep(300 * time.Millisecond)
 	})
 	defer closeSrv()
