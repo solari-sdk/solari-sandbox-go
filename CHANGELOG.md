@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+
+### Fixed
+- **`Client.Pause` retries `503 PauseRetryable`.** A host that cuts a pause short leaves the sandbox running and the gateway answers a retryable 503, but `POST /pause` carried no `Idempotency-Key`, so the transport never retried and the caller saw the 503. Pause is idempotent on the gateway (an already-paused sandbox answers 200), so every call now sends one key, the same on every attempt, and the 503 is retried with backoff.
+
 ## 0.7.0
 
 Closes two gaps the 2026-11-10 retest found in 0.5/0.6: a Go caller could not read a command's binary output, and a failed `git` call was not a `*SolariError`.
@@ -9,7 +14,6 @@ Closes two gaps the 2026-11-10 retest found in 0.5/0.6: a Go caller could not re
 - **`GitError`**: a `git` command the sandbox ran that exited non-zero (`Subcommand`, `ExitCode`, git's own message with any credential masked). It embeds `SolariError`, so `errors.As(err, &*SolariError)` matches every git failure.
 
 ### Changed
-- **`Client.Pause` retries `503 PauseRetryable`.** A host that cuts a pause short leaves the sandbox running and the gateway answers a retryable 503, but `POST /pause` carried no `Idempotency-Key`, so the transport never retried and the caller saw the 503. Pause is idempotent on the gateway (an already-paused sandbox answers 200), so every call now sends one key, the same on every attempt, and the 503 is retried with backoff.
 - **Git failures are typed.** `Git.Clone`, `Add`, `Commit`, `Push`, `Pull`, `Checkout`, `Branches`, `Log` and `Status` return `*GitError` where they returned an untyped `fmt.Errorf`; the message text is unchanged, so code that matches on it still works. Input the SDK refuses before running git (a credential containing a line break or NUL, a ref or remote starting with `-`) is now a `*ValidationError`, the same class as a bad `Commands.Run` option.
 
 ### Upgrading from 0.4 (behaviour changes since 0.5 that can break callers)
