@@ -2,6 +2,9 @@ package solari
 
 import (
 	"context"
+	"encoding/base64"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,5 +64,69 @@ func TestCodeRunChartFlattening(t *testing.T) {
 	}
 	if streamed != "hi" {
 		t.Errorf("streamed stdout: %q", streamed)
+	}
+}
+
+func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+// With a callback, code.run asks the guest to stream (stream:true) and the callback fires while the cell runs, not after it:
+// the mock sends one frame, then WAITS until the callback has seen it before it sends the rest and the result. A character
+// split across two frames arrives whole, and the result's complete text is not delivered a second time.
+func TestCodeRunStreamsOutputWhileRunning(t *testing.T) {
+	gotFirst := make(chan struct{})
+	var sawStreamTrue bool
+	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
+		req, err := readOneFrame(conn)
+		if err != nil {
+			return
+		}
+		sawStreamTrue = strings.Contains(req, `"stream":true`)
+		euro := []byte("€") // 3 bytes, split across two frames
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","stream":"stdout","data":"`+b64("tick1 ")+`"}`+"\n"))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","stream":"stdout","data":"`+base64.StdEncoding.EncodeToString(euro[:2])+`"}`+"\n"))
+		select { // the rest only after the client's callback saw the first output
+		case <-gotFirst:
+		case <-time.After(5 * time.Second):
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","stream":"stdout","data":"`+base64.StdEncoding.EncodeToString(euro[2:])+`"}`+"\n"))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","stream":"stderr","data":"`+b64("warn\n")+`"}`+"\n"))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","ok":true,"result":{"results":[{"type":"stdout","text":"tick1 €"},{"type":"stderr","text":"warn\n"},{"type":"stdout","text":"tail"}]}}`+"\n"))
+		time.Sleep(100 * time.Millisecond)
+	})
+	defer closeSrv()
+
+	sb := newTestSandbox(wsURL)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sb.Close()
+
+	var mu sync.Mutex
+	var out, errOut strings.Builder
+	first := true
+	_, err := sb.Code.Run(ctx, "print()", RunCodeOptions{
+		OnStdout: func(s string) {
+			mu.Lock()
+			out.WriteString(s)
+			if first {
+				first = false
+				close(gotFirst)
+			}
+			mu.Unlock()
+		},
+		OnStderr: func(s string) { mu.Lock(); errOut.WriteString(s); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatalf("code.run: %v", err)
+	}
+	if !sawStreamTrue {
+		t.Errorf("code.run was not sent with stream:true")
+	}
+	if got := out.String(); got != "tick1 €tail" {
+		t.Errorf("stdout callbacks = %q, want %q (streamed text once, then only the unflushed tail)", got, "tick1 €tail")
+	}
+	if got := errOut.String(); got != "warn\n" {
+		t.Errorf("stderr callbacks = %q, want %q", got, "warn\n")
 	}
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2
+
+### Fixed
+- **`Code.Run` `OnStdout`/`OnStderr` fire while the cell runs.** They were called only after the run finished (a 6 s cell with a tick every 2 s delivered the first output at 6.3 s). The request now carries `stream:true` when a callback is set, and a guest that streams sends output frames before the result; a character split across two frames arrives whole, and the result's complete text is delivered only beyond what the frames already did, so nothing is delivered twice. A guest that predates streaming sends no frames and its whole output is delivered once from the result, as before. Retest C-32.
+
+### Tests
+- A command that exits before its handle exists (its `cmd.exit` buffered ahead of the handle) leaves no "channel closed" hook registered, so the channel can idle-close. The order in `Commands.Start` was already right; the test pins it (retest B-N1 / C4, fixed in the TS and Python SDKs).
+
 ## 0.7.1
 
 ### Fixed
