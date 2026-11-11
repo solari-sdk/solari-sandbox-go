@@ -63,15 +63,28 @@ type idleServer struct {
 	closed  int
 	exitCh  chan struct{} // closed to make the server send cmd.exit for c1
 	exitSet bool
+	delay   time.Duration // how long a reply to fs.slow is held back
+	dropCh  chan struct{} // closed to make the server drop connection number dropNth
+	dropNth int
 }
 
 func newIdleServer(t *testing.T) (*idleServer, string, func()) {
 	t.Helper()
-	is := &idleServer{exitCh: make(chan struct{})}
+	is := &idleServer{exitCh: make(chan struct{}), dropCh: make(chan struct{})}
 	url, stop := startMockControlServer(t, func(conn *websocket.Conn) {
 		is.mu.Lock()
 		is.opened++
+		n := is.opened
 		is.mu.Unlock()
+		go func() {
+			select {
+			case <-is.dropCh:
+				if n == is.dropNth {
+					conn.Close()
+				}
+			case <-time.After(10 * time.Second):
+			}
+		}()
 		go func() {
 			select {
 			case <-is.exitCh:
@@ -95,6 +108,9 @@ func newIdleServer(t *testing.T) (*idleServer, string, func()) {
 			res := `{}`
 			if req.Method == "cmd.start" {
 				res = `{"cmdId":"c1"}`
+			}
+			if req.Method == "fs.slow" {
+				time.Sleep(is.delay)
 			}
 			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"`+req.ID+`","ok":true,"result":`+res+`}`+"\n"))
 		}
@@ -196,4 +212,122 @@ func TestFastCommandDoesNotKeepTheSocketOpen(t *testing.T) {
 		t.Fatalf("wait: %v", err)
 	}
 	waitFor(t, "the socket to idle-close after a fast command", 3*time.Second, func() bool { _, c := is.counts(); return c == 1 })
+}
+
+// ClientOptions.IdleCloseMs reaches the channel: 0 is the 3 s default, a negative value disables the idle close, a positive one is used.
+func TestClientIdleCloseMsSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		ms   int
+		want time.Duration
+	}{{0, 3 * time.Second}, {-1, 0}, {250, 250 * time.Millisecond}} {
+		c, err := NewClient(ClientOptions{APIKey: "slr_test_x", BaseURL: "http://127.0.0.1:1", IdleCloseMs: tc.ms})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sb, err := c.newSandbox(CreateSandboxResponse{SandboxID: "sb", ControlURL: "ws://127.0.0.1:1/control/sb"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sb.ch.mu.Lock()
+		got := sb.ch.idleClose
+		sb.ch.mu.Unlock()
+		if got != tc.want {
+			t.Errorf("IdleCloseMs=%d: idleClose = %v, want %v", tc.ms, got, tc.want)
+		}
+	}
+}
+
+func TestNegativeIdleCloseKeepsTheSocketOpen(t *testing.T) {
+	is, url, stop := newIdleServer(t)
+	defer stop()
+	sb := newTestSandbox(url)
+	sb.ch.setIdleClose(-1)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer sb.Close()
+	if _, err := sb.ch.call(ctx, "fs.stat", map[string]interface{}{"path": "/"}, callOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(600 * time.Millisecond)
+	if _, c := is.counts(); c != 0 || !sb.Connected() {
+		t.Fatalf("the socket was closed (%d) although the idle close is disabled", c)
+	}
+}
+
+// Activity resets the timer: calls spaced inside the window keep the socket open, and it closes only after the last one.
+func TestActivityKeepsTheSocketOpenUntilTheLastCall(t *testing.T) {
+	is, url, stop := newIdleServer(t)
+	defer stop()
+	sb := newTestSandbox(url)
+	sb.ch.setIdleClose(400)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer sb.Close()
+	for i := 0; i < 6; i++ { // 6 x 200 ms = 1.2 s, three idle windows
+		if _, err := sb.ch.call(ctx, "fs.stat", map[string]interface{}{"path": "/"}, callOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, c := is.counts(); c != 0 {
+			t.Fatalf("the socket closed after %d call(s) although each came inside the window", i+1)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	waitFor(t, "the socket to close after the last call", 3*time.Second, func() bool { _, c := is.counts(); return c == 1 })
+}
+
+// A call in flight keeps the socket: its reply arrives after the idle window and the call still succeeds on the same socket.
+func TestInFlightCallKeepsTheSocketPastTheIdleWindow(t *testing.T) {
+	is, url, stop := newIdleServer(t)
+	defer stop()
+	is.delay = 700 * time.Millisecond
+	sb := newTestSandbox(url)
+	sb.ch.setIdleClose(200)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer sb.Close()
+	if _, err := sb.ch.call(ctx, "fs.slow", map[string]interface{}{}, callOptions{}); err != nil {
+		t.Fatalf("a slow call lost its socket to the idle close: %v", err)
+	}
+	if o, _ := is.counts(); o != 1 {
+		t.Fatalf("connections opened = %d, want 1 (the slow call must not have been reopened)", o)
+	}
+}
+
+// An idle close is not a drop: what the channel keeps for a later handler (a buffered frame) survives it, and a socket reopened by
+// hand and then dropped by the peer is a real drop (the next call reports it, it does not silently reopen).
+func TestIdleCloseIsNotADrop(t *testing.T) {
+	is, url, stop := newIdleServer(t)
+	defer stop()
+	sb := newTestSandbox(url)
+	sb.ch.setIdleClose(200)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer sb.Close()
+	sb.ch.feed([]byte(`{"type":"cmd.exit","cmdId":"c9","exitCode":0}` + "\n")) // buffered: no handler yet
+	waitFor(t, "the idle close", 3*time.Second, func() bool { _, c := is.counts(); return c == 1 })
+	sb.ch.mu.Lock()
+	kept := len(sb.ch.orphanFrames)
+	sb.ch.mu.Unlock()
+	if kept != 1 {
+		t.Fatalf("the idle close dropped the buffered frame (orphan frames = %d): it was treated as a drop", kept)
+	}
+	// reopen by hand, then the peer drops it for real
+	sb.ch.setIdleClose(-1)
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	is.dropNth = 2
+	close(is.dropCh)
+	waitFor(t, "the drop to be noticed", 3*time.Second, func() bool { return !sb.Connected() })
+	if _, err := sb.ch.call(ctx, "fs.stat", map[string]interface{}{"path": "/"}, callOptions{}); err == nil {
+		t.Fatalf("a call after a real drop silently reopened the socket (idleClosed was not cleared by the reconnect)")
+	}
 }

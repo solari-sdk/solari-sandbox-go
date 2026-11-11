@@ -134,3 +134,69 @@ func TestCodeRunStreamsOutputWhileRunning(t *testing.T) {
 		t.Errorf("stderr callbacks = %q, want %q", got, "warn\n")
 	}
 }
+
+// helper: a mock that records the code.run request, sends the given frames, then the result
+func codeRunMock(t *testing.T, frames []string, result string) (string, func(), *string) {
+	var req string
+	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
+		r, err := readOneFrame(conn)
+		if err != nil {
+			return
+		}
+		req = r
+		for _, f := range frames {
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(f+"\n"))
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(result+"\n"))
+		time.Sleep(100 * time.Millisecond)
+	})
+	return wsURL, closeSrv, &req
+}
+
+func runCodeWith(t *testing.T, wsURL string, o RunCodeOptions) {
+	t.Helper()
+	sb := newTestSandbox(wsURL)
+	ctx := context.Background()
+	if err := sb.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sb.Close()
+	if _, err := sb.Code.Run(ctx, "print()", o); err != nil {
+		t.Fatalf("code.run: %v", err)
+	}
+}
+
+// Only OnStdout is set and the guest streams a stderr frame: it is ignored, not a nil-callback call.
+func TestCodeRunStderrFrameWithOnlyOnStdout(t *testing.T) {
+	wsURL, closeSrv, _ := codeRunMock(t, []string{
+		`{"id":"1","stream":"stderr","data":"` + b64("warn\n") + `"}`,
+		`{"id":"1","stream":"stdout","data":"` + b64("out") + `"}`,
+	}, `{"id":"1","ok":true,"result":{"results":[{"type":"stdout","text":"out"},{"type":"stderr","text":"warn\n"}]}}`)
+	defer closeSrv()
+	var out string
+	runCodeWith(t, wsURL, RunCodeOptions{OnStdout: func(s string) { out += s }})
+	if out != "out" {
+		t.Errorf("stdout = %q, want %q", out, "out")
+	}
+}
+
+// Without callbacks the request does not ask the guest to stream.
+func TestCodeRunWithoutCallbacksDoesNotRequestStreaming(t *testing.T) {
+	wsURL, closeSrv, req := codeRunMock(t, nil, `{"id":"1","ok":true,"result":{"results":[{"type":"stdout","text":"x"}]}}`)
+	defer closeSrv()
+	runCodeWith(t, wsURL, RunCodeOptions{})
+	if strings.Contains(*req, `"stream"`) {
+		t.Errorf("code.run without callbacks carried a stream flag: %s", *req)
+	}
+}
+
+// A guest that predates streaming sends no frames: the callbacks get the whole result text, exactly once.
+func TestCodeRunOldGuestDeliversTheResultTextOnce(t *testing.T) {
+	wsURL, closeSrv, _ := codeRunMock(t, nil, `{"id":"1","ok":true,"result":{"results":[{"type":"stdout","text":"a"},{"type":"stdout","text":"b"},{"type":"stderr","text":"e"}]}}`)
+	defer closeSrv()
+	var out, errOut []string
+	runCodeWith(t, wsURL, RunCodeOptions{OnStdout: func(s string) { out = append(out, s) }, OnStderr: func(s string) { errOut = append(errOut, s) }})
+	if strings.Join(out, "|") != "ab" || strings.Join(errOut, "|") != "e" {
+		t.Errorf("callbacks got stdout=%q stderr=%q, want one delivery each: %q / %q", out, errOut, "ab", "e")
+	}
+}
