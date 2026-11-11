@@ -74,7 +74,7 @@ func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) 
 // split across two frames arrives whole, and the result's complete text is not delivered a second time.
 func TestCodeRunStreamsOutputWhileRunning(t *testing.T) {
 	gotFirst := make(chan struct{})
-	var sawStreamTrue bool
+	var sawStreamTrue, liveBeforeRest bool
 	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
 		req, err := readOneFrame(conn)
 		if err != nil {
@@ -86,6 +86,7 @@ func TestCodeRunStreamsOutputWhileRunning(t *testing.T) {
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","stream":"stdout","data":"`+base64.StdEncoding.EncodeToString(euro[:2])+`"}`+"\n"))
 		select { // the rest only after the client's callback saw the first output
 		case <-gotFirst:
+			liveBeforeRest = true
 		case <-time.After(5 * time.Second):
 		}
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"1","stream":"stdout","data":"`+base64.StdEncoding.EncodeToString(euro[2:])+`"}`+"\n"))
@@ -122,6 +123,9 @@ func TestCodeRunStreamsOutputWhileRunning(t *testing.T) {
 	}
 	if !sawStreamTrue {
 		t.Errorf("code.run was not sent with stream:true")
+	}
+	if !liveBeforeRest {
+		t.Errorf("the callback did not fire while the cell was still running")
 	}
 	if got := out.String(); got != "tick1 €tail" {
 		t.Errorf("stdout callbacks = %q, want %q (streamed text once, then only the unflushed tail)", got, "tick1 €tail")
