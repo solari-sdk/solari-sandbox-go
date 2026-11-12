@@ -8,7 +8,7 @@ import (
 // Gateway status + body code -> typed error (PROTOCOL.md section 4).
 func TestMapGatewayErrorByCode(t *testing.T) {
 	type want struct {
-		auth, plan, concurrency, noCapacity bool // which typed error it must be; all false = a plain *GatewayError
+		auth, plan, concurrency, noCapacity, interrupted, validation bool // which typed error it must be; all false = a plain *GatewayError
 	}
 	cases := []struct {
 		id     string
@@ -17,6 +17,8 @@ func TestMapGatewayErrorByCode(t *testing.T) {
 		retry  bool
 		w      want
 	}{
+		{"400-validation", 400, "ValidationError", false, want{validation: true}},
+		{"400-no-code", 400, "", false, want{validation: true}},
 		{"401", 401, "Unauthorized", false, want{auth: true}},
 		{"402-plan", 402, "FeatureRequiresPlan", false, want{plan: true}},
 		{"402-credit", 402, "InsufficientCredit", false, want{plan: true}},
@@ -24,6 +26,8 @@ func TestMapGatewayErrorByCode(t *testing.T) {
 		{"403-other", 403, "Forbidden", false, want{}},
 		{"404", 404, "NotFound", false, want{}},
 		{"409-sandbox-stopped", 409, "SandboxStopped", false, want{}},
+		{"409-exec-interrupted", 409, "ExecInterrupted", false, want{interrupted: true}},
+		{"409-host-capability-missing", 409, "HostCapabilityMissing", false, want{}},
 		{"410-gone", 410, "SandboxGone", false, want{}},
 		{"429-concurrency-cap", 429, "ConcurrencyLimitExceeded", false, want{concurrency: true}},
 		{"429-no-code", 429, "", false, want{concurrency: true}},
@@ -47,6 +51,8 @@ func TestMapGatewayErrorByCode(t *testing.T) {
 			var plan *PlanError
 			var conc *ConcurrencyLimitError
 			var capErr *NoCapacityError
+			var intr *ExecInterruptedError
+			var val *ValidationError
 			if got := errors.As(err, &auth); got != c.w.auth {
 				t.Errorf("AuthError = %v, want %v (%T)", got, c.w.auth, err)
 			}
@@ -59,6 +65,12 @@ func TestMapGatewayErrorByCode(t *testing.T) {
 			if got := errors.As(err, &capErr); got != c.w.noCapacity {
 				t.Errorf("NoCapacityError = %v, want %v (%T)", got, c.w.noCapacity, err)
 			}
+			if got := errors.As(err, &intr); got != c.w.interrupted {
+				t.Errorf("ExecInterruptedError = %v, want %v (%T)", got, c.w.interrupted, err)
+			}
+			if got := errors.As(err, &val); got != c.w.validation {
+				t.Errorf("ValidationError = %v, want %v (%T)", got, c.w.validation, err)
+			}
 			var g *GatewayError
 			if !errors.As(err, &g) {
 				t.Fatalf("every mapped error unwraps to *GatewayError, got %T", err)
@@ -69,7 +81,7 @@ func TestMapGatewayErrorByCode(t *testing.T) {
 			if g.Body == nil || g.Body.Retryable != c.retry {
 				t.Errorf("retryable hint not kept: %+v", g.Body)
 			}
-			if !c.w.auth && !c.w.plan && !c.w.concurrency && !c.w.noCapacity {
+			if !c.w.auth && !c.w.plan && !c.w.concurrency && !c.w.noCapacity && !c.w.interrupted && !c.w.validation {
 				if _, plainType := err.(*GatewayError); !plainType {
 					t.Errorf("want a plain *GatewayError, got %T", err)
 				}

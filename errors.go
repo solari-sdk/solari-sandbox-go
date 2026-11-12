@@ -108,6 +108,14 @@ type SandboxNotStoppedError struct {
 
 func (e *SandboxNotStoppedError) Unwrap() error { return &e.GatewayError }
 
+// ExecInterruptedError maps HTTP 409 {code:"ExecInterrupted"} from a one-shot command (POST /sandboxes/:id/exec): the sandbox
+// was parked while the command ran, so it may have partly run. It is never retried and never re-run on the live connection.
+// Not retryable as-is. errors.As(&*GatewayError) still matches it (Status 409, Code "ExecInterrupted"). The Rust SDK's
+// SolariError::ExecInterrupted.
+type ExecInterruptedError struct{ GatewayError }
+
+func (e *ExecInterruptedError) Unwrap() error { return &e.GatewayError }
+
 // ActionError is raised when a control-WS JSON-RPC call returns {ok:false}.
 type ActionError struct {
 	SolariError
@@ -223,6 +231,9 @@ func mapGatewayError(status int, body *GatewayErrorBody) error {
 				e.State = body.State
 			}
 			return e
+		}
+		if code == "ExecInterrupted" {
+			return &ExecInterruptedError{build("The command may have partly run before the sandbox was parked")}
 		}
 		return plain("Conflict")
 	case 503:
