@@ -148,8 +148,10 @@ func TestPauseRetryWindowEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.http.retryDelayMs = 20
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // a window that never ended would retry until this
+	defer cancel()
 	start := time.Now()
-	err = c.Pause(context.Background(), "sbx_1")
+	err = c.Pause(ctx, "sbx_1")
 	took := time.Since(start)
 	var ge *GatewayError
 	if !errors.As(err, &ge) || ge.Status != 503 || ge.Code != "PauseRetryable" {
