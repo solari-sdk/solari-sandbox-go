@@ -2,10 +2,12 @@ package solari
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // A host that cuts a pause short leaves the sandbox running and the gateway answers a retryable 503 PauseRetryable. POST /pause
@@ -112,5 +114,53 @@ func TestPauseWindowDoesNotRetryANonRetryableAnswer(t *testing.T) {
 	defer mu.Unlock()
 	if n != 1 {
 		t.Fatalf("requests = %d, want 1", n)
+	}
+}
+
+// The pause window is 120 s, as in TypeScript and Python (PAUSE_RETRY_WINDOW_MS).
+func TestPauseRetryWindowIsTwoMinutes(t *testing.T) {
+	if pauseRetryWindow != 120*time.Second {
+		t.Fatalf("pauseRetryWindow = %v, want 2m0s", pauseRetryWindow)
+	}
+}
+
+// The window bounds the retries: a pause that keeps answering PauseRetryable is retried while the window is open and then the last
+// 503 reaches the caller. Shortened to 300 ms with a 20 ms delay: more attempts than the ordinary budget (6), and it ends near
+// the window, not never.
+func TestPauseRetryWindowEnds(t *testing.T) {
+	saved := pauseRetryWindow
+	pauseRetryWindow = 300 * time.Millisecond
+	defer func() { pauseRetryWindow = saved }()
+
+	var mu sync.Mutex
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"error":"Sandbox pause did not finish; it is still running","code":"PauseRetryable","retryable":true}`))
+	}))
+	defer srv.Close()
+	c, err := NewClient(ClientOptions{APIKey: "k", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.http.retryDelayMs = 20
+	start := time.Now()
+	err = c.Pause(context.Background(), "sbx_1")
+	took := time.Since(start)
+	var ge *GatewayError
+	if !errors.As(err, &ge) || ge.Status != 503 || ge.Code != "PauseRetryable" {
+		t.Fatalf("want the last 503 PauseRetryable after the window, got %v", err)
+	}
+	if took < 300*time.Millisecond || took > 3*time.Second {
+		t.Fatalf("Pause returned after %v, want just after the 300ms window", took)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n <= 6 {
+		t.Fatalf("requests = %d, want more than the ordinary budget of 6 inside the window", n)
 	}
 }

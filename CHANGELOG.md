@@ -10,7 +10,7 @@
 
 ### Tests
 - `TestMapGatewayErrorByCode`: 409 `ExecInterrupted` is `*ExecInterruptedError`; 400 (`ValidationError` or no code) is `*ValidationError`; 409 `HostCapabilityMissing` stays a plain `*GatewayError`. Red without the 409 mapping.
-- `TestPauseRetriesBeyondTheOrdinaryRetryBudget`: eight `PauseRetryable` answers then 200 succeed, one key on every attempt. Red without the window. `TestPauseWindowDoesNotRetryANonRetryableAnswer`: a 409 is one request.
+- `TestPauseRetriesBeyondTheOrdinaryRetryBudget`: eight `PauseRetryable` answers then 200 succeed, one key on every attempt. Red without the window. `TestPauseWindowDoesNotRetryANonRetryableAnswer`: a 409 is one request. `TestPauseRetryWindowIsTwoMinutes` pins 120 s; `TestPauseRetryWindowEnds` (window shortened to 300 ms) retries more than the ordinary budget inside the window and then returns the last 503 `PauseRetryable` just after it. Red with the window at 5 s, and with a window that never ends.
 
 ## 0.7.2
 

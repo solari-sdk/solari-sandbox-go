@@ -107,8 +107,8 @@ type httpRequestOptions struct {
 }
 
 // pauseRetryWindow is how long a pause is retried after a retryable 503 (PauseRetryable): a pause takes 35-110 s on a loaded
-// host. Same window as the TypeScript and Python SDKs (PAUSE_RETRY_WINDOW_MS).
-const pauseRetryWindow = 120 * time.Second
+// host. Same window as the TypeScript and Python SDKs (PAUSE_RETRY_WINDOW_MS). A variable only so a test can shorten it.
+var pauseRetryWindow = 120 * time.Second
 
 // request performs a REST call and unmarshals the JSON response into out (which
 // may be nil for empty-body responses). It applies the retry policy above.
