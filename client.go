@@ -168,8 +168,9 @@ func (c *Client) Kill(ctx context.Context, sandboxID string) error {
 // with Resume; its control channel is dead until then.
 func (c *Client) Pause(ctx context.Context, sandboxID string) error {
 	// Pause is idempotent on the gateway (an already-paused sandbox answers 200). The key is what makes the transport retry a POST at
-	// all, so a retryable 503 PauseRetryable (the host cut the pause short and left the sandbox running) is retried.
-	return c.http.request(ctx, http.MethodPost, "/sandboxes/"+encodeURIComponent(sandboxID)+"/pause", nil, httpRequestOptions{idempotencyKey: newIdempotencyKey()}, nil)
+	// all, so a retryable 503 PauseRetryable (the host cut the pause short and left the sandbox running) is retried, for up to
+	// pauseRetryWindow: a pause takes 35-110 s on a loaded host.
+	return c.http.request(ctx, http.MethodPost, "/sandboxes/"+encodeURIComponent(sandboxID)+"/pause", nil, httpRequestOptions{idempotencyKey: newIdempotencyKey(), retryWindow: pauseRetryWindow}, nil)
 }
 
 // Resume re-hydrates a paused session (POST /sandboxes/:id/resume) and returns

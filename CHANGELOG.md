@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3
+
+### Added
+- **`*ExecInterruptedError`: a 409 `ExecInterrupted` from a one-shot command is typed.** The sandbox was parked while the command ran (POST `/sandboxes/:id/exec`), so it may have partly run; it is never retried and never re-run on the live connection. It was a plain `*GatewayError` with that code. `errors.As(&*GatewayError)` still matches it (Status 409, Code `ExecInterrupted`), so existing code keeps working. The Rust SDK's `SolariError::ExecInterrupted`.
+
+### Fixed
+- **`Pause` retries a retryable `503 PauseRetryable` for up to two minutes, not ~5 s.** A pause takes 35-110 s on a loaded host, and a host that cuts it short answers a retryable 503. The transport gave up after its five retries, so a slow pause surfaced the 503. `Client.Pause` (and the handle's `Pause`, which calls it) now keeps retrying, with the same `Idempotency-Key`, for 120 s, as the TypeScript and Python SDKs do (`PAUSE_RETRY_WINDOW_MS`).
+
+### Tests
+- `TestMapGatewayErrorByCode`: 409 `ExecInterrupted` is `*ExecInterruptedError`; 400 (`ValidationError` or no code) is `*ValidationError`; 409 `HostCapabilityMissing` stays a plain `*GatewayError`. Red without the 409 mapping.
+- `TestPauseRetriesBeyondTheOrdinaryRetryBudget`: eight `PauseRetryable` answers then 200 succeed, one key on every attempt. Red without the window. `TestPauseWindowDoesNotRetryANonRetryableAnswer`: a 409 is one request. `TestPauseRetryWindowIsTwoMinutes` pins 120 s; `TestPauseRetryWindowEnds` (window shortened to 300 ms) retries more than the ordinary budget inside the window and then returns the last 503 `PauseRetryable` just after it. Red with the window at 5 s, and with a window that never ends.
+
 ## 0.7.2
 
 ### Fixed

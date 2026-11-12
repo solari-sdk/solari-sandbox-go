@@ -99,7 +99,16 @@ type httpRequestOptions struct {
 	// idempotencyKey, when set, sends an Idempotency-Key header AND makes the
 	// request retry-safe.
 	idempotencyKey string
+	// retryWindow, when set, retries a retryable failure until this long has passed since the first attempt, instead of
+	// maxRetries times (~5 s of backoff). For calls whose server side legitimately takes a while to settle: a pause takes
+	// 35-110 s on a loaded host, and a host that cuts it short answers a retryable 503 PauseRetryable. Only an idempotent
+	// request is retried at all. Mirrors retryWindowMs in http.ts.
+	retryWindow time.Duration
 }
+
+// pauseRetryWindow is how long a pause is retried after a retryable 503 (PauseRetryable): a pause takes 35-110 s on a loaded
+// host. Same window as the TypeScript and Python SDKs (PAUSE_RETRY_WINDOW_MS). A variable only so a test can shorten it.
+var pauseRetryWindow = 120 * time.Second
 
 // request performs a REST call and unmarshals the JSON response into out (which
 // may be nil for empty-body responses). It applies the retry policy above.
@@ -115,6 +124,13 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 		bodyBytes = b
 	}
 
+	started := time.Now()
+	mayRetry := func(attempt int) bool {
+		if opts.retryWindow > 0 {
+			return time.Since(started) < opts.retryWindow
+		}
+		return attempt < t.maxRetries
+	}
 	attempt := 0
 	for {
 		req, err := http.NewRequestWithContext(ctx, method, t.baseURL+path, bytesReader(bodyBytes))
@@ -132,7 +148,7 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 
 		res, err := t.httpClient.Do(req)
 		if err != nil {
-			if idempotent && attempt < t.maxRetries {
+			if idempotent && mayRetry(attempt) {
 				if serr := t.sleepBackoff(ctx, attempt); serr != nil {
 					return serr
 				}
@@ -168,7 +184,7 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 			retryableStatus := res.StatusCode == 502 || res.StatusCode == 503 ||
 				res.StatusCode == 504 || res.StatusCode == 507
 			retryable := retryableStatus || (errBody != nil && errBody.Retryable)
-			if idempotent && retryable && attempt < t.maxRetries {
+			if idempotent && retryable && mayRetry(attempt) {
 				if serr := t.sleepBackoff(ctx, attempt); serr != nil {
 					return serr
 				}
