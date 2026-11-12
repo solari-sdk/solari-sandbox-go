@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.4
+
+### Fixed
+- **A cancelled or timed-out one-shot `Exec` stops the command, even through the load balancer.** `POST /sandboxes/{id}/exec` now sends `X-Solari-Stream: 1`; the gateway starts its answer early (a newline every 5 s), so the dropped connection reaches it. The final result carries `httpStatus`, which the transport turns back into the usual result or error. A gateway that ignores the header answers as before.
+
 ## 0.7.3
 
 ### Added

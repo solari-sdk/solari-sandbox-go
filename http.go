@@ -104,6 +104,11 @@ type httpRequestOptions struct {
 	// 35-110 s on a loaded host, and a host that cuts it short answers a retryable 503 PauseRetryable. Only an idempotent
 	// request is retried at all. Mirrors retryWindowMs in http.ts.
 	retryWindow time.Duration
+	// stream sends X-Solari-Stream: 1 (POST /sandboxes/{id}/exec): the gateway starts its response early, so a dropped connection
+	// (this call's context, a killed process) cancels the command even through the load balancer. A streamed answer is HTTP 200
+	// whatever happened; its real status is "httpStatus" in the body and is unwrapped here into the normal result or error. A
+	// gateway that ignores the header answers as before.
+	stream bool
 }
 
 // pauseRetryWindow is how long a pause is retried after a retryable 503 (PauseRetryable): a pause takes 35-110 s on a loaded
@@ -145,6 +150,9 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 		if opts.idempotencyKey != "" {
 			req.Header.Set("Idempotency-Key", opts.idempotencyKey)
 		}
+		if opts.stream {
+			req.Header.Set("X-Solari-Stream", "1")
+		}
 
 		res, err := t.httpClient.Do(req)
 		if err != nil {
@@ -162,10 +170,46 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 			return ce
 		}
 
-		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			var errBody *GatewayErrorBody
-			raw, _ := io.ReadAll(res.Body)
+		status := res.StatusCode
+		var raw []byte
+		if opts.stream && status >= 200 && status < 300 {
+			// A streamed answer: leading keep-alive newlines, then the result with the real status in "httpStatus".
+			body, rerr := io.ReadAll(res.Body)
 			res.Body.Close()
+			if rerr != nil {
+				return newConnectionError(fmt.Sprintf("%s %s: reading body failed: %v", method, path, rerr))
+			}
+			var probe map[string]json.RawMessage
+			if len(bytes.TrimSpace(body)) > 0 && json.Unmarshal(body, &probe) == nil {
+				if hs, ok := probe["httpStatus"]; ok {
+					var httpStatus int
+					if json.Unmarshal(hs, &httpStatus) == nil {
+						delete(probe, "httpStatus")
+						inner, _ := json.Marshal(probe)
+						if httpStatus >= 400 {
+							status, raw = httpStatus, inner
+						} else {
+							body = inner
+						}
+					}
+				}
+			}
+			if status < 400 {
+				if len(bytes.TrimSpace(body)) == 0 || out == nil {
+					return nil
+				}
+				if err := json.Unmarshal(body, out); err != nil {
+					return newSolariError(fmt.Sprintf("%s %s: decoding response failed: %v", method, path, err))
+				}
+				return nil
+			}
+		}
+		if status < 200 || status >= 300 {
+			var errBody *GatewayErrorBody
+			if raw == nil {
+				raw, _ = io.ReadAll(res.Body)
+				res.Body.Close()
+			}
 			if len(raw) > 0 {
 				var b GatewayErrorBody
 				if json.Unmarshal(raw, &b) == nil {
@@ -181,8 +225,8 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 			// would cover it today, but that ties this SDK's correctness to which
 			// gateway build the caller reaches. 500 excluded (an unhandled error is
 			// not known-transient); 429 excluded as before.
-			retryableStatus := res.StatusCode == 502 || res.StatusCode == 503 ||
-				res.StatusCode == 504 || res.StatusCode == 507
+			retryableStatus := status == 502 || status == 503 ||
+				status == 504 || status == 507
 			retryable := retryableStatus || (errBody != nil && errBody.Retryable)
 			if idempotent && retryable && mayRetry(attempt) {
 				if serr := t.sleepBackoff(ctx, attempt); serr != nil {
@@ -191,10 +235,10 @@ func (t *httpTransport) request(ctx context.Context, method, path string, body i
 				attempt++
 				continue
 			}
-			return mapGatewayError(res.StatusCode, errBody)
+			return mapGatewayError(status, errBody)
 		}
 
-		raw, err := io.ReadAll(res.Body)
+		raw, err = io.ReadAll(res.Body)
 		res.Body.Close()
 		if err != nil {
 			return newConnectionError(fmt.Sprintf("%s %s: reading body failed: %v", method, path, err))
