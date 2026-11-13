@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **`Commands.Run` refuses `TimeoutMs` above 600000 before anything is sent, on both paths.** It returns `*ValidationError` "timeoutMs must be at most 600000", as the gateway's `POST /exec` already did with a 400. A run that took the live connection (`Env`, `User`, callbacks, `Background`) used to start the command with the longer deadline, because that deadline is this SDK's own timer. 600000 itself and 0 (the default) are unchanged.
+
 ## 0.7.4
 
 ### Fixed
