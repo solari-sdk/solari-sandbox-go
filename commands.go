@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -316,6 +317,11 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 	}
 	if timeoutMs == 0 {
 		timeoutMs = defaultCommandTimeoutMs
+	}
+	// Over the cap is refused on both paths, as REST refuses it (retest C-08). The live connection used to run it: its deadline is
+	// this SDK's own timer, so nothing else would have said no.
+	if timeoutMs > defaultCommandTimeoutMs {
+		return nil, newValidationError("timeoutMs must be at most " + strconv.Itoa(defaultCommandTimeoutMs))
 	}
 	if opts.User != "" && !validUser(opts.User) {
 		return nil, newValidationError("user: must be a unix user name or root")

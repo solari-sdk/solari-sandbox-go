@@ -3,13 +3,16 @@ package solari
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -212,5 +215,62 @@ func TestRunWithACancellableContextOnASharedSandboxUsesREST(t *testing.T) {
 	}
 	if rest.Load() != 3 || starts.Load() != 1 {
 		t.Fatalf("REST used %d times (want 3), cmd.start sent %d times (want 1: the refusal is remembered)", rest.Load(), starts.Load())
+	}
+}
+
+// Retest C-08: a deadline over the cap is a ValidationError before anything is sent, on both paths. REST answered 400 for it,
+// but the live connection (Env, User, callbacks, Background) ran the command with the longer deadline.
+func TestRunRefusesATimeoutOverTheCapOnBothPaths(t *testing.T) {
+	var frames atomic.Int32
+	wsURL, closeSrv := startMockControlServer(t, func(conn *websocket.Conn) {
+		for {
+			frame, err := readOneFrame(conn)
+			if err != nil {
+				return
+			}
+			n := frames.Add(1)
+			// Answer like a guest, so a regression fails on the assertions below instead of hanging.
+			var req struct {
+				ID     string `json:"id"`
+				Method string `json:"method"`
+			}
+			_ = json.Unmarshal([]byte(frame), &req)
+			reply := `{"id":"` + req.ID + `","ok":true,"result":{"cmdId":"c` + strconv.Itoa(int(n)) + `"}}` + "\n"
+			if req.Method == "cmd.start" {
+				reply += `{"type":"cmd.exit","cmdId":"c` + strconv.Itoa(int(n)) + `","exitCode":0}` + "\n"
+			}
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(reply))
+		}
+	})
+	defer closeSrv()
+	var restCalls atomic.Int32
+	sb := newTestSandbox(wsURL)
+	defer sb.Close()
+	sb.execHook = func(context.Context, string, execOneShotRequest) (*CommandResult, error) {
+		restCalls.Add(1)
+		return &CommandResult{}, nil
+	}
+	for _, opts := range []CommandOptions{
+		{TimeoutMs: defaultCommandTimeoutMs + 1},
+		{TimeoutMs: 700000},
+		{TimeoutMs: 700000, Env: map[string]string{"A": "1"}},
+		{TimeoutMs: 700000, Background: true},
+	} {
+		_, err := sb.Commands.Run(context.Background(), "true", opts)
+		var ve *ValidationError
+		if !errors.As(err, &ve) || ve.Message != "timeoutMs must be at most 600000" {
+			t.Errorf("opts %+v: want *ValidationError \"timeoutMs must be at most 600000\", got %T %v", opts, err, err)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := restCalls.Load(); n != 0 {
+		t.Errorf("%d REST /exec calls were made; want none", n)
+	}
+	if n := frames.Load(); n != 0 {
+		t.Errorf("%d control frames reached the guest; want none", n)
+	}
+	// The cap itself still runs.
+	if _, err := sb.Commands.Run(context.Background(), "true", CommandOptions{TimeoutMs: defaultCommandTimeoutMs}); err != nil {
+		t.Errorf("timeoutMs at the cap: %v", err)
 	}
 }
