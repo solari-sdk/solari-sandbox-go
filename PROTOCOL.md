@@ -212,6 +212,10 @@ All are `channel.call(method, params)` → `result` unless noted.
 
 `CommandResult = { exitCode: int, stdout: string, stderr: string }`.
 
+`timeoutMs` is at most **600000** on every route. Validate it before choosing a transport: a larger value is a
+`ValidationError` "timeoutMs must be at most 600000" and nothing is sent (REST `/exec` answers the same 400; the live
+connection has no server-side check for `cmd.start`, whose deadline is the SDK's own timer).
+
 ### files (all `fs.*`)
 - **`fs.read`** `{path}` → `{base64}` (decode to bytes). Provide a text helper.
 - **`fs.write`** `{path, base64, mode?}` → `{ok:true}`. `mode` is an int (e.g. 0o644) or unset.

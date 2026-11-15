@@ -25,6 +25,9 @@ Requires Go 1.23+ and `github.com/gorilla/websocket`.
   session. The first `Commands.Run` on an unconnected sandbox uses the warm REST
   `/exec` path, skipping the cold WS handshake; call `Connect(ctx)` to open the
   WS for streaming/interactive work.
+- **Command deadline.** `CommandOptions.TimeoutMs` is the command's deadline on either transport, at most 600000
+  (10 minutes); `0` means that maximum. A larger value returns `*ValidationError` "timeoutMs must be at most 600000"
+  before anything is sent (from v0.7.5).
 
 ## Example: create → run a command → git
 
