@@ -171,7 +171,7 @@ const cancelKillGrace = 2 * time.Second
 
 // closeFlushTimeout is how long Sandbox.Close waits for the cmd.kill of a cancelled Run that is still on its way before it tears the socket
 // down anyway (a stalled link must not hang Close).
-const closeFlushTimeout = 3 * time.Second
+var closeFlushTimeout = 3 * time.Second // a var so a test can shorten it
 
 // CloseStdin closes the command's stdin (an EOF to a program reading it, such as cat or a shell). Write what the command
 // should read with Stdin first.
