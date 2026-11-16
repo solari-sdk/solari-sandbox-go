@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.6
+
+### Fixed
+- **Cancelling a `Commands.Run` and calling `Sandbox.Close()` straight away no longer drops the kill.** A cancelled run sends SIGTERM (and closes the command's stdin) from its own goroutine so the caller returns at once, and `Close()` tore the socket down before that goroutine had written the `cmd.kill`, so the guest process kept running (retest 2026-11-16, R4: 0 of 4 killed on staging; with 500 ms between the cancel and `Close()` all 4 were). `Close()` now waits, for at most 3 seconds, for the SIGTERM of every run whose context is already cancelled; a run that is merely still going does not delay it, and a stalled link cannot hang it.
+
+### Tests
+- `commands_cancel_close_test.go`: cancel then immediate `Close()` delivers `cmd.kill` (red before the change: the server saw only `cmd.start`); `Close()` gives up after the 3 s bound when the link stalls; `Close()` with nothing cancelled returns at once; `Close()` does not wait for a run that was never cancelled. Each of the three behaviours goes red when its code is removed.
+
 ## 0.7.5
 
 ### Fixed

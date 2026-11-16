@@ -93,6 +93,10 @@ type channel struct {
 	// rxBuffer accumulates partial reads; touched only by the read loop / feed.
 	rxBuffer []byte
 
+	// runs are the commands being waited on; Sandbox.Close waits for the cancelled ones (see beginRun).
+	runsMu sync.Mutex
+	runs   []*activeRun
+
 	mu             sync.Mutex
 	nextID         int
 	connected      bool
@@ -437,6 +441,59 @@ func (c *channel) failAll(err error) {
 	}
 	for _, cb := range closers {
 		cb(err)
+	}
+}
+
+// beginRun registers a command being waited on over this channel. The returned func (idempotent) says the command is done with, or, for
+// a cancelled one, that its SIGTERM has been written. Sandbox.Close waits for the registered runs whose context is ALREADY cancelled: their
+// kill is owed and would be lost with the socket. A run that is merely still going does not delay Close.
+func (c *channel) beginRun(ctx context.Context) func() {
+	r := &activeRun{ctx: ctx, done: make(chan struct{})}
+	c.runsMu.Lock()
+	c.runs = append(c.runs, r)
+	c.runsMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(r.done)
+			c.runsMu.Lock()
+			for i, x := range c.runs {
+				if x == r {
+					c.runs = append(c.runs[:i], c.runs[i+1:]...)
+					break
+				}
+			}
+			c.runsMu.Unlock()
+		})
+	}
+}
+
+type activeRun struct {
+	ctx  context.Context
+	done chan struct{}
+}
+
+// waitCancelledRuns blocks until every cancelled run has written its SIGTERM, or timeout has passed.
+func (c *channel) waitCancelledRuns(timeout time.Duration) {
+	c.runsMu.Lock()
+	var owed []*activeRun
+	for _, r := range c.runs {
+		if r.ctx.Err() != nil {
+			owed = append(owed, r)
+		}
+	}
+	c.runsMu.Unlock()
+	if len(owed) == 0 {
+		return
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for _, r := range owed {
+		select {
+		case <-r.done:
+		case <-deadline.C:
+			return
+		}
 	}
 }
 

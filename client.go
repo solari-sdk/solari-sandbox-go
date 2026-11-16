@@ -327,8 +327,12 @@ func (s *Sandbox) Reconnect(ctx context.Context) error { return s.ch.reconnect(c
 // Connected reports whether the control channel is open.
 func (s *Sandbox) Connected() bool { return s.ch.isConnected() }
 
-// Close closes the control channel locally (does NOT release the remote session).
-func (s *Sandbox) Close() { s.ch.close() }
+// Close closes the control channel locally (does NOT release the remote session). A Run that was cancelled just before sends its
+// SIGTERM from its own goroutine; Close waits (up to closeFlushTimeout) for that write so the kill is not lost with the socket.
+func (s *Sandbox) Close() {
+	s.ch.waitCancelledRuns(closeFlushTimeout)
+	s.ch.close()
+}
 
 // Pause snapshots this session's RAM+disk, frees its host slot, and closes the
 // control channel. The session keeps its id; bring it back with Resume.
