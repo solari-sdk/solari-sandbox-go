@@ -169,6 +169,10 @@ func (h *CommandHandle) Kill(ctx context.Context, signal int) error {
 // cancelKillGrace is how long a cancelled command gets to exit after SIGTERM before it is SIGKILLed.
 const cancelKillGrace = 2 * time.Second
 
+// closeFlushTimeout is how long Sandbox.Close waits for the cmd.kill of a cancelled Run that is still on its way before it tears the socket
+// down anyway (a stalled link must not hang Close).
+var closeFlushTimeout = 3 * time.Second // a var so a test can shorten it
+
 // CloseStdin closes the command's stdin (an EOF to a program reading it, such as cat or a shell). Write what the command
 // should read with Stdin first.
 func (h *CommandHandle) CloseStdin(ctx context.Context) error {
@@ -179,11 +183,12 @@ func (h *CommandHandle) CloseStdin(ctx context.Context) error {
 // stopAfterCancel is what a cancelled Commands.Run does to the guest process: SIGTERM and close stdin now, SIGKILL after
 // cancelKillGrace if it has not exited. Every call is best effort (a command that already finished answers with an error),
 // and runs on its own goroutine (the caller starts it with `go`) so the cancelled caller returns at once.
-func (h *CommandHandle) stopAfterCancel() {
+func (h *CommandHandle) stopAfterCancel(stopped func()) {
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = h.Kill(bg, 15)
 	_ = h.CloseStdin(bg)
 	cancel()
+	stopped() // SIGTERM and the stdin EOF are written: Sandbox.Close no longer has to wait for this command
 	select {
 	case <-h.done:
 		return
@@ -397,6 +402,9 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 	if timeoutMs > 0 {
 		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 	}
+	// Registered BEFORE the wait: a Close() that runs the instant ctx is cancelled (before this goroutine has noticed) must still know a
+	// kill is owed (retest 2026-11-16, R4). finishRun is called once the command is done with, or its SIGTERM has been written.
+	finishRun := handle.ch.beginRun(ctx)
 	code, err := handle.Wait(waitCtx)
 	cancel()
 	timedOut := false
@@ -408,12 +416,15 @@ func (s *Sandbox) runCommand(ctx context.Context, cmd string, opts CommandOption
 		} else {
 			if ctx.Err() != nil {
 				// Cancelled: the guest process would otherwise run on. Ask it to stop, close its stdin, and
-				// escalate to SIGKILL if it is still there after 2 s.
-				go handle.stopAfterCancel()
+				// escalate to SIGKILL if it is still there after 2 s. Sandbox.Close() waits (bounded) for the SIGTERM to be written.
+				go handle.stopAfterCancel(finishRun)
+			} else {
+				finishRun()
 			}
 			return nil, err
 		}
 	}
+	finishRun()
 	res := acc.result(code)
 	res.TimedOut = timedOut
 	return res, nil
